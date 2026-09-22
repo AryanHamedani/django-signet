@@ -419,7 +419,16 @@ A dedicated **security suite** is mandatory and gates release:
 - Disabled-user regression, pinning CVE-2024-22513
 - Revocation on password change
 
-Matrix: Django 4.2 LTS / 5.1 / 5.2 LTS × DRF 3.14+ × Python 3.10–3.13, via nox.
+Matrix, via nox (Django 4.2 LTS reached end of life in April 2026 and is
+excluded):
+
+| | Django 5.2 LTS | Django 6.0 | Django 6.1 |
+|---|---|---|---|
+| Python 3.12 | yes | yes | yes |
+| Python 3.13 | yes | yes | yes |
+| Python 3.14 | no (unsupported by 5.2) | yes | yes |
+
+DRF 3.16+.
 
 ---
 
