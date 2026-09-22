@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: lint, types and architecture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install ruff mypy django-stubs djangorestframework-stubs import-linter
+      - run: pip install -e .
+      - name: ruff check
+        run: ruff check --output-format=github .
+      - name: ruff format
+        run: ruff format --check .
+      - name: mypy
+        run: mypy src/django_signet
+      - name: architecture fitness
+        run: lint-imports
+
+  test:
+    name: py${{ matrix.python }} / django${{ matrix.django }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+        django: ["5.2", "6.0", "6.1"]
+        exclude:
+          # Django 5.2 does not support Python 3.14.
+          - python: "3.14"
+            django: "5.2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install "django~=${{ matrix.django }}.0" djangorestframework pyjwt
+              pytest pytest-django pytest-cov
+      - run: pip install -e ".[rsa]"
+      - run: pytest -q --cov --cov-report=xml
+      - uses: codecov/codecov-action@v5
+        if: matrix.python == '3.13' && matrix.django == '6.1'
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+        continue-on-error: true
+
+  security-gate:
+    name: adversarial suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e ".[rsa]" pytest pytest-django
+      - name: the adversarial suite must pass
+        run: pytest tests/security/ -v

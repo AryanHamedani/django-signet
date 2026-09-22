@@ -100,7 +100,7 @@ library is expected to have.
 - Create: `LICENSE`, `README.md` (stub), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`
 - Create: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/workflows/codeql.yml`
 - Create: `.github/dependabot.yml`, `.github/CODEOWNERS`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/ISSUE_TEMPLATE/bug_report.yml`, `.github/ISSUE_TEMPLATE/feature_request.yml`, `.github/ISSUE_TEMPLATE/config.yml`
-- Create: `src/django_signet/__init__.py`, `src/django_signet/py.typed`
+- Create: `src/django_signet/__init__.py`, `src/django_signet/py.typed`, and the empty module skeleton the import-linter contracts reference (`tokens/`, `sessions/`, `sessions/stores/`, `transport/` packages plus empty `conf.py`, `exceptions.py`, `signals.py`, `hashing.py`, `csrf.py`, `authentication.py`, `serializers.py`, `views.py`)
 
 **Interfaces:**
 - Produces: the `src/` layout that every later task's paths assume; `ruff`, `mypy --strict`, `import-linter` and `pytest` all runnable and green on an empty package; CI that gates every pull request.
@@ -322,10 +322,26 @@ printf '%s\n' '__pycache__/' '*.py[cod]' '.venv/' 'dist/' 'build/' '*.egg-info/'
   '.nox/' '.tox/' '.pytest_cache/' '.mypy_cache/' '.ruff_cache/' '.coverage' \
   'htmlcov/' '*.sqlite3' '.env' '.superpowers/' > .gitignore
 
+# Scaffold the module skeleton. import-linter contracts name these modules,
+# and a `forbidden` contract hard-fails with "Module X does not exist" if any
+# named module is absent - so without this, lint-imports could not pass until
+# Task 11 and CI would be red from the first commit. The files stay empty;
+# later tasks fill them in.
+mkdir -p src/django_signet/{tokens,sessions/stores,transport}
+for p in tokens sessions sessions/stores transport; do
+  touch src/django_signet/$p/__init__.py
+done
+for m in conf exceptions signals hashing csrf authentication serializers views; do
+  touch src/django_signet/$m.py
+done
+
 .venv/bin/pip install -e .
+.venv/bin/ruff format .
 .venv/bin/ruff check .
-.venv/bin/ruff format --check .
+.venv/bin/lint-imports
 ```
+
+Expected from `lint-imports`: `Contracts: 4 kept, 0 broken.`
 
 Expected: `ruff check` reports "All checks passed"; `ruff format --check` reports the files are already formatted.
 
