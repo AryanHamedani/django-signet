@@ -115,8 +115,8 @@ Every configurable value is declared with a `setting()` descriptor:
 ```python
 class BaseJWTAuthentication(BaseAuthentication):
     access_lifetime = setting("ACCESS_TOKEN_LIFETIME", default=timedelta(minutes=5))
-    algorithm       = setting("ALGORITHM", default="HS256")
-    store           = setting("STORE", default=ORMTokenStore)
+    algorithm = setting("ALGORITHM", default="HS256")
+    store = setting("STORE", default=ORMTokenStore)
 ```
 
 Resolution order, highest wins:
@@ -133,6 +133,7 @@ project for free:
 ```python
 class CustomerJWTAuthentication(CookieJWTAuthentication):
     cookie_policy = CookiePolicy(prefix="shop", samesite="Lax")
+
 
 class StaffJWTAuthentication(StrictCookieJWTAuthentication):
     cookie_policy = CookiePolicy(prefix="adm", samesite="Strict")
@@ -170,23 +171,25 @@ dict cannot express.
 
 ```python
 class TokenFamily(models.Model):
-    id            = UUIDField(primary_key=True, default=uuid4)
-    user          = ForeignKey(AUTH_USER_MODEL, related_name="signet_families",
-                               on_delete=CASCADE)
-    created_at    = DateTimeField(auto_now_add=True)
-    last_used_at  = DateTimeField(null=True)
-    expires_at    = DateTimeField(db_index=True)
-    revoked_at    = DateTimeField(null=True, db_index=True)
-    revoked_reason= CharField(max_length=32, null=True, choices=RevocationReason)
-    user_agent    = CharField(max_length=256, blank=True)
-    ip_address    = GenericIPAddressField(null=True)
+    id = UUIDField(primary_key=True, default=uuid4)
+    user = ForeignKey(
+        AUTH_USER_MODEL, related_name="signet_families", on_delete=CASCADE
+    )
+    created_at = DateTimeField(auto_now_add=True)
+    last_used_at = DateTimeField(null=True)
+    expires_at = DateTimeField(db_index=True)
+    revoked_at = DateTimeField(null=True, db_index=True)
+    revoked_reason = CharField(max_length=32, null=True, choices=RevocationReason)
+    user_agent = CharField(max_length=256, blank=True)
+    ip_address = GenericIPAddressField(null=True)
+
 
 class IssuedToken(models.Model):
-    id          = UUIDField(primary_key=True, default=uuid4)   # == the jti claim
-    family      = ForeignKey(TokenFamily, related_name="tokens", on_delete=CASCADE)
-    digest      = CharField(max_length=64, unique=True, db_index=True)  # sha256 hex
-    issued_at   = DateTimeField(auto_now_add=True)
-    expires_at  = DateTimeField(db_index=True)
+    id = UUIDField(primary_key=True, default=uuid4)  # == the jti claim
+    family = ForeignKey(TokenFamily, related_name="tokens", on_delete=CASCADE)
+    digest = CharField(max_length=64, unique=True, db_index=True)  # sha256 hex
+    issued_at = DateTimeField(auto_now_add=True)
+    expires_at = DateTimeField(db_index=True)
     consumed_at = DateTimeField(null=True)
 ```
 
@@ -212,7 +215,7 @@ class TokenStore(ABC):
     @abstractmethod
     def open_family(self, user, digest, expires_at, meta) -> TokenFamily: ...
     @abstractmethod
-    def consume(self, digest) -> ConsumeResult: ...   # MUST be atomic
+    def consume(self, digest) -> ConsumeResult: ...  # MUST be atomic
     @abstractmethod
     def is_live(self, family_id) -> bool: ...
     @abstractmethod
@@ -245,7 +248,7 @@ implementation makes reuse detection racy and therefore useless.
 ```python
 class RotationPolicy:
     grace_window = timedelta(seconds=10)
-    grace_cache  = "default"       # Django cache alias; None disables grace
+    grace_cache = "default"  # Django cache alias; None disables grace
     burn_family_on_reuse = True
 ```
 
@@ -292,15 +295,15 @@ strict rather than silently failing open.
 
 ```python
 class CookiePolicy:
-    prefix        = "signet"
-    access_name   = "__Host-signet-access"     # Path=/, so __Host- is valid
-    refresh_name  = "__Secure-signet-refresh"  # path-scoped, so __Host- is NOT
-    csrf_name     = "signet-csrf"      # deliberately readable by JS
-    samesite      = "Lax"
-    secure        = True
-    httponly      = True
-    refresh_path  = "/api/auth/refresh"   # path-scoped: not sent on every request
-    domain        = None
+    prefix = "signet"
+    access_name = "__Host-signet-access"  # Path=/, so __Host- is valid
+    refresh_name = "__Secure-signet-refresh"  # path-scoped, so __Host- is NOT
+    csrf_name = "signet-csrf"  # deliberately readable by JS
+    samesite = "Lax"
+    secure = True
+    httponly = True
+    refresh_path = "/api/auth/refresh"  # path-scoped: not sent on every request
+    domain = None
 ```
 
 Decisions:

@@ -97,7 +97,7 @@ library is expected to have.
 
 **Files:**
 - Create: `pyproject.toml`, `noxfile.py`, `.pre-commit-config.yaml`, `.editorconfig`, `.gitignore`
-- Create: `LICENSE`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`
+- Create: `LICENSE`, `README.md` (stub), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`
 - Create: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/workflows/codeql.yml`
 - Create: `.github/dependabot.yml`, `.github/CODEOWNERS`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/ISSUE_TEMPLATE/bug_report.yml`, `.github/ISSUE_TEMPLATE/feature_request.yml`, `.github/ISSUE_TEMPLATE/config.yml`
 - Create: `src/django_signet/__init__.py`, `src/django_signet/py.typed`
@@ -445,7 +445,19 @@ def tests(session: nox.Session, django: str) -> None:
 
 - [ ] **Step 6: Write the open-source governance files**
 
+`pyproject.toml` declares `readme = "README.md"`, so the build cannot succeed
+without one. Write a stub here; Task 14 replaces it with the full document.
+
 ```bash
+cat > README.md <<'EOF'
+# django-signet
+
+Polymorphic, secure-by-default JWT authentication for Django REST Framework.
+
+Under active development. See `docs/` for the design specification and the
+implementation plan.
+EOF
+
 cat > LICENSE <<'EOF'
 MIT License
 
@@ -1074,7 +1086,7 @@ DEFAULTS: dict[str, Any] = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=14),
     "ALGORITHM": "HS256",
-    "SIGNING_KEY": None,      # None -> fall back to settings.SECRET_KEY
+    "SIGNING_KEY": None,  # None -> fall back to settings.SECRET_KEY
     "VERIFYING_KEY": None,
     "AUDIENCE": None,
     "ISSUER": None,
@@ -1087,7 +1099,7 @@ DEFAULTS: dict[str, Any] = {
     "COOKIE_HTTPONLY": True,
     "COOKIE_REFRESH_PATH": "/api/auth/refresh",
     "COOKIE_DOMAIN": None,
-    "COOKIE_ACCESS_NAME": None,   # None -> derive from prefix + prefix rules
+    "COOKIE_ACCESS_NAME": None,  # None -> derive from prefix + prefix rules
     "COOKIE_REFRESH_NAME": None,
     "COOKIE_CSRF_NAME": None,
 }
@@ -1162,10 +1174,10 @@ class TransportError(SignetError):
 # src/django_signet/signals.py
 import django.dispatch
 
-token_issued = django.dispatch.Signal()         # user, family, request
-token_refreshed = django.dispatch.Signal()      # user, family, request
-token_reuse_detected = django.dispatch.Signal() # user, family, request
-family_revoked = django.dispatch.Signal()       # user, family, reason
+token_issued = django.dispatch.Signal()  # user, family, request
+token_refreshed = django.dispatch.Signal()  # user, family, request
+token_reuse_detected = django.dispatch.Signal()  # user, family, request
+family_revoked = django.dispatch.Signal()  # user, family, reason
 ```
 
 - [ ] **Step 5: Run the test to verify it passes**
@@ -1251,8 +1263,9 @@ def test_rejects_alg_none(backend):
 
 def test_rejects_algorithm_substitution(backend):
     """A token signed HS512 must not verify on an HS256 backend."""
-    forged = jwt.encode({"sub": "999", "exp": int(time.time()) + 60},
-                        key="k" * 64, algorithm="HS512")
+    forged = jwt.encode(
+        {"sub": "999", "exp": int(time.time()) + 60}, key="k" * 64, algorithm="HS512"
+    )
     with pytest.raises(TokenInvalid):
         backend.verify(forged)
 
@@ -1269,8 +1282,9 @@ def test_leeway_tolerates_small_clock_skew(backend):
 
 
 def test_audience_and_issuer_are_enforced(backend):
-    token = backend.sign({"sub": "1", "exp": int(time.time()) + 60,
-                          "aud": "api", "iss": "signet"})
+    token = backend.sign(
+        {"sub": "1", "exp": int(time.time()) + 60, "aud": "api", "iss": "signet"}
+    )
     assert backend.verify(token, audience="api", issuer="signet")["sub"] == "1"
     with pytest.raises(TokenInvalid):
         backend.verify(token, audience="other", issuer="signet")
@@ -1337,9 +1351,7 @@ class SigningBackend(abc.ABC):
         leeway: timedelta = _ZERO,
     ) -> dict[str, Any]:
         try:
-            return self._decode(
-                token, audience=audience, issuer=issuer, leeway=leeway
-            )
+            return self._decode(token, audience=audience, issuer=issuer, leeway=leeway)
         except jwt.ExpiredSignatureError as exc:
             raise TokenExpired(str(exc)) from exc
         except jwt.PyJWTError as exc:
@@ -1680,9 +1692,7 @@ class Token(abc.ABC):
             raw, audience=self.audience, issuer=self.issuer, leeway=self.leeway
         )
         if claims.get("typ") != self.typ:
-            raise TokenInvalid(
-                f"expected typ={self.typ!r}, got {claims.get('typ')!r}"
-            )
+            raise TokenInvalid(f"expected typ={self.typ!r}, got {claims.get('typ')!r}")
         return claims
 ```
 
@@ -2245,15 +2255,11 @@ class ORMTokenStore(TokenStore):
         family.revoke(reason)
 
     def revoke_all_for_user(self, user: Any, reason: str) -> None:
-        for family in TokenFamily.objects.filter(
-            user=user, revoked_at__isnull=True
-        ):
+        for family in TokenFamily.objects.filter(user=user, revoked_at__isnull=True):
             family.revoke(reason)
 
     def purge_expired(self) -> int:
-        deleted, _ = TokenFamily.objects.filter(
-            expires_at__lte=timezone.now()
-        ).delete()
+        deleted, _ = TokenFamily.objects.filter(expires_at__lte=timezone.now()).delete()
         return TokenFamily.objects.none().count() or _get_family_count(deleted)
 
 
@@ -2442,14 +2448,10 @@ class CacheTokenStore(TokenStore):
         ip_address: str | None = None,
     ) -> _CachedFamily:
         family = _CachedFamily(id=uuid.uuid4(), user=user, expires_at=expires_at)
-        self.cache.set(
-            _FAMILY.format(family.id), family, self._ttl(expires_at)
-        )
+        self.cache.set(_FAMILY.format(family.id), family, self._ttl(expires_at))
         return family
 
-    def issue(
-        self, family: _CachedFamily, digest: str, expires_at: datetime
-    ) -> None:
+    def issue(self, family: _CachedFamily, digest: str, expires_at: datetime) -> None:
         self.cache.set(
             _TOKEN.format(digest),
             (str(family.id), expires_at),
@@ -2469,9 +2471,7 @@ class CacheTokenStore(TokenStore):
             return ConsumeResult(Outcome.EXPIRED, family)
 
         # add() succeeds only if the key was absent: exactly one caller wins.
-        won = self.cache.add(
-            _CONSUMED.format(digest), True, self._ttl(expires_at)
-        )
+        won = self.cache.add(_CONSUMED.format(digest), True, self._ttl(expires_at))
         if not won:
             return ConsumeResult(Outcome.ALREADY_CONSUMED, family)
         return ConsumeResult(Outcome.LIVE, family)
@@ -2670,7 +2670,9 @@ def test_rotating_after_the_family_is_revoked_raises(policy, user):
 def test_unknown_refresh_token_raises_invalid(policy, user):
     from django_signet.tokens.refresh import RefreshToken
 
-    orphan = RefreshToken().mint(subject="1", family_id="00000000-0000-0000-0000-000000000000")
+    orphan = RefreshToken().mint(
+        subject="1", family_id="00000000-0000-0000-0000-000000000000"
+    )
     with pytest.raises(TokenInvalid):
         policy.rotate(orphan.value)
 
@@ -2799,9 +2801,7 @@ class RotationPolicy:
             self._burn(result.family)
             raise TokenReused("refresh token replayed outside the grace window")
 
-        pair = self._mint_into(
-            result.family, subject=claims["sub"], extra=extra
-        )
+        pair = self._mint_into(result.family, subject=claims["sub"], extra=extra)
         self._grace_put(digest, pair)
         return pair
 
@@ -3430,9 +3430,7 @@ def new_csrf_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def issue_csrf(
-    response: Any, policy: CookiePolicy, token: str | None = None
-) -> str:
+def issue_csrf(response: Any, policy: CookiePolicy, token: str | None = None) -> str:
     """Set the double-submit cookie. Deliberately NOT httponly: the client
     has to read it in order to echo it back in the header."""
     token = token or new_csrf_token()
@@ -4073,8 +4071,10 @@ class LogoutAllView(SignetViewMixin, APIView):
             # A cache-backed store cannot enumerate a user's families. Say so
             # plainly rather than surfacing a 500 for a documented limitation.
             return Response(
-                {"detail": "Logout-everywhere is not supported by the "
-                           "configured token store."},
+                {
+                    "detail": "Logout-everywhere is not supported by the "
+                    "configured token store."
+                },
                 status=status.HTTP_501_NOT_IMPLEMENTED,
             )
         response = Response({"detail": "Signed out everywhere."})
@@ -4186,9 +4186,7 @@ def test_changing_a_password_revokes_every_session(user):
     families = TokenFamily.objects.filter(user=user)
     assert families.count() == 2
     assert all(f.is_live is False for f in families)
-    assert all(
-        f.revoked_reason == RevocationReason.PASSWORD_CHANGE for f in families
-    )
+    assert all(f.revoked_reason == RevocationReason.PASSWORD_CHANGE for f in families)
 
 
 def test_saving_without_changing_the_password_leaves_sessions_alone(user):
@@ -4324,9 +4322,7 @@ def revoke_on_password_change(sender: Any, instance: Any, **kwargs: Any) -> None
 
     from django_signet.sessions.stores.orm import ORMTokenStore
 
-    ORMTokenStore().revoke_all_for_user(
-        instance, RevocationReason.PASSWORD_CHANGE
-    )
+    ORMTokenStore().revoke_all_for_user(instance, RevocationReason.PASSWORD_CHANGE)
 ```
 
 ```python
@@ -4437,8 +4433,11 @@ def _attack(client, token):
 def test_alg_none_is_rejected(client, account):
     """The classic forgery: strip the signature, declare alg=none."""
     forged = jwt.encode(
-        {"sub": str(account.pk), "typ": "access",
-         "exp": int((timezone.now() + timedelta(hours=1)).timestamp())},
+        {
+            "sub": str(account.pk),
+            "typ": "access",
+            "exp": int((timezone.now() + timedelta(hours=1)).timestamp()),
+        },
         key="",
         algorithm="none",
     )
@@ -4450,8 +4449,11 @@ def test_hmac_signed_with_the_public_key_is_rejected(client, account):
     Because the backend pins algorithms=['HS256'] and the real secret is
     private, this must fail."""
     forged = jwt.encode(
-        {"sub": str(account.pk), "typ": "access",
-         "exp": int((timezone.now() + timedelta(hours=1)).timestamp())},
+        {
+            "sub": str(account.pk),
+            "typ": "access",
+            "exp": int((timezone.now() + timedelta(hours=1)).timestamp()),
+        },
         key="a-public-value-an-attacker-knows",
         algorithm="HS256",
     )
@@ -4671,7 +4673,9 @@ git commit -m "test: adversarial security suite covering forgery and session att
 
 Tooling, CI and governance files were created in Task 0; this task is documentation, benchmarks and the release gate.
 
-- [ ] **Step 1: Write the README**
+- [ ] **Step 1: Replace the README stub with the full document**
+
+Task 0 wrote a placeholder so the build would work. Overwrite it.
 
 ```bash
 cat > README.md <<'EOF'
@@ -4727,9 +4731,11 @@ so several auth behaviours coexist in one project:
 class CustomerAuth(CookieJWTAuthentication):
     access_lifetime = timedelta(minutes=5)
 
-class StaffAuth(StrictCookieJWTAuthentication):   # instant revocation
+
+class StaffAuth(StrictCookieJWTAuthentication):  # instant revocation
     access_lifetime = timedelta(minutes=10)
     transport = CookieTransport(CookiePolicy(prefix="adm", samesite="Strict"))
+
 
 class PaymentViewSet(ModelViewSet):
     authentication_classes = [StaffAuth]
@@ -4742,6 +4748,7 @@ method:
 class LoginView(TokenObtainView):
     def get_claims(self, user):
         return {"org": user.org_id}
+
 
 class RefreshView(TokenRefreshView):
     class rotation(RotationPolicy):
