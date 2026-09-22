@@ -1,0 +1,33 @@
+name: Bug report
+description: Something behaves differently than documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a security vulnerability, stop and report it privately:
+        https://github.com/p0s3id0n/django-signet/security/advisories/new
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: django-signet, Django, DRF and Python versions
+      placeholder: "django-signet 0.1.0, Django 6.1, DRF 3.18, Python 3.13"
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations: { required: true }
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: Settings, the authentication class in use, and the request made.
+      render: python
+    validations: { required: true }
