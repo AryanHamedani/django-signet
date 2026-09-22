@@ -27,7 +27,7 @@
   - `conf`, `exceptions`, `hashing`, `signals` depend on nothing above them.
   Crossing a boundary is a design change, not an implementation detail: raise it rather than adding the import.
 - **Complexity ceiling:** cyclomatic complexity 8 (ruff `C90`). A function that trips it wants splitting, not an ignore.
-- **Every task ends with the same gate before its commit:** `ruff check . && ruff format --check . && mypy src/django_signet && lint-imports`, plus that task's tests.
+- **Every task ends with the same gate before its commit:** `ruff format . && ruff check --fix . && mypy src/django_signet && lint-imports && pytest -q`. Format *before* checking — code transcribed from this plan is not pre-formatted. Never silence a finding with `# noqa`; if `mypy --strict` proves impractical for Django model classes specifically, add a scoped `[[tool.mypy.overrides]]` for `django_signet.sessions.models` with a comment explaining why, rather than weakening `strict` globally.
 - All files stay under 500 lines.
 - Every public class ships complete, secure, working defaults. Overriding is optional refinement, never required assembly.
 - Hook names (`get_claims`, `set_cookies`, `on_reuse_detected`, `get_user`, `validate_claims`) are a frozen API contract from v1.
@@ -1176,12 +1176,21 @@ Expected: 4 passed.
 - [ ] **Step 6: Run the quality gates**
 
 ```bash
-.venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/ruff format .          # format first - do not hand-format
+.venv/bin/ruff check --fix .
 .venv/bin/mypy src/django_signet
 .venv/bin/lint-imports
+.venv/bin/pytest -q              # re-run after any autofix
 ```
 
-Expected: all three clean. From here on every task ends with this gate before its commit; `conf.py` is the first module `mypy --strict` sees, so fix any annotation gaps now rather than accumulating them.
+Expected: all clean. **Run `ruff format` before `ruff check`, never
+`--check` first** — code transcribed from this plan is not pre-formatted, and
+starting with `--check` fails every time. If `ruff check --fix` leaves a
+finding, fix it properly rather than adding `# noqa`.
+
+From here on every task ends with this same gate before its commit. `conf.py`
+is the first module `mypy --strict` sees, so close any annotation gaps now
+rather than accumulating them.
 
 - [ ] **Step 7: Commit**
 
@@ -1724,7 +1733,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/django_signet/hashing.py django_signet/tokens/ tests/tokens/
+git add src/django_signet/hashing.py src/django_signet/tokens/ tests/tokens/
 git commit -m "feat: access and refresh token classes with type-confusion guards"
 ```
 
@@ -1939,7 +1948,7 @@ Expected: exit code 0, "No changes detected".
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/django_signet/sessions/ django_signet/models.py django_signet/migrations/ tests/sessions/
+git add src/django_signet/sessions/ src/django_signet/models.py src/django_signet/migrations/ tests/sessions/
 git commit -m "feat: TokenFamily and IssuedToken models with digest-only storage"
 ```
 
@@ -3293,12 +3302,22 @@ class HybridTransport(Transport):
             return False
         return True
 
+    @property
+    def policy(self) -> Any:
+        """Delegate to the cookie half. ``validate_csrf`` needs a policy, and
+        only the cookie path is ambient, so the cookie policy is the right
+        one to expose."""
+        return self.cookie.policy
+
     def attach(self, response: Any, pair: Any) -> None:
         self.cookie.attach(response, pair)
 
     def clear(self, response: Any) -> None:
         self.cookie.clear(response)
 ```
+
+`HeaderTransport` needs no `policy`: `is_ambient` is `False`, so the CSRF
+check returns before it would be consulted.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -3721,16 +3740,6 @@ class StrictHybridJWTAuthentication(HybridJWTAuthentication):
     strict = True
 ```
 
-Note: `HybridTransport` has no `.policy` of its own, so add this property to it in `src/django_signet/transport/header.py` — `should_enforce_csrf` and `validate_csrf` both need it:
-
-```python
-    @property
-    def policy(self) -> Any:
-        return self.cookie.policy
-```
-
-`HeaderTransport` never reaches `validate_csrf` because `is_ambient` is `False`, so it needs no `policy`.
-
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `.venv/bin/pytest tests/test_authentication.py -v`
@@ -3739,7 +3748,7 @@ Expected: 11 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/django_signet/authentication.py django_signet/transport/header.py tests/test_authentication.py
+git add src/django_signet/authentication.py tests/test_authentication.py
 git commit -m "feat: DRF authentication classes with strict siblings and CVE-2024-22513 guard"
 ```
 
@@ -4058,7 +4067,16 @@ class LogoutAllView(SignetViewMixin, APIView):
     reason = RevocationReason.LOGOUT_ALL
 
     def post(self, request: Any) -> Response:
-        self.rotation.store.revoke_all_for_user(request.user, self.reason)
+        try:
+            self.rotation.store.revoke_all_for_user(request.user, self.reason)
+        except NotImplementedError:
+            # A cache-backed store cannot enumerate a user's families. Say so
+            # plainly rather than surfacing a 500 for a documented limitation.
+            return Response(
+                {"detail": "Logout-everywhere is not supported by the "
+                           "configured token store."},
+                status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
         response = Response({"detail": "Signed out everywhere."})
         self.transport.clear(response)
         return response
@@ -4100,7 +4118,7 @@ Expected: everything passes.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/django_signet/serializers.py django_signet/views.py django_signet/urls.py tests/
+git add src/django_signet/serializers.py src/django_signet/views.py src/django_signet/urls.py tests/
 git commit -m "feat: login, refresh, verify and logout views with cookie encapsulation"
 ```
 
@@ -4353,7 +4371,7 @@ Expected: "System check identified no issues".
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/django_signet/checks.py django_signet/revocation.py django_signet/apps.py tests/
+git add src/django_signet/checks.py src/django_signet/revocation.py src/django_signet/apps.py tests/
 git commit -m "feat: system checks and password-change session revocation"
 ```
 
