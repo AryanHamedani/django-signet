@@ -1,0 +1,181 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "django-signet"
+version = "0.1.0"
+description = "Polymorphic, secure-by-default JWT authentication for Django REST Framework"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "p0s3id0n" }]
+keywords = ["django", "djangorestframework", "jwt", "authentication", "cookies", "security"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0",
+    "Framework :: Django :: 6.1",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
+dependencies = [
+    "django>=5.2",
+    "djangorestframework>=3.16",
+    "pyjwt>=2.10",
+]
+
+[project.optional-dependencies]
+rsa = ["cryptography>=42"]
+
+[project.urls]
+Homepage = "https://github.com/p0s3id0n/django-signet"
+Documentation = "https://github.com/p0s3id0n/django-signet#readme"
+Changelog = "https://github.com/p0s3id0n/django-signet/blob/main/CHANGELOG.md"
+Issues = "https://github.com/p0s3id0n/django-signet/issues"
+Source = "https://github.com/p0s3id0n/django-signet"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/django_signet"]
+
+# ----------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["django_signet"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "\\.\\.\\."]
+
+# ------------------------------------------------------------------- ruff
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade - keeps us on current Python idioms
+    "B",         # bugbear
+    "A",         # shadowing builtins
+    "C4",        # comprehensions
+    "DTZ",       # naive datetimes: a bug class in an auth library
+    "S",         # bandit security rules
+    "SIM",       # simplification
+    "PTH",       # pathlib over os.path
+    "PT",        # pytest style
+    "TID",       # tidy imports
+    "ARG",       # unused arguments
+    "RUF",
+    "C90",       # mccabe complexity - a code-smell brake
+]
+ignore = [
+    "S105",  # hardcoded-password-string: too noisy around claim names
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, use throwaway secrets, and take unused fixtures by design.
+"tests/**" = ["S101", "S105", "S106", "ARG001", "ARG002"]
+"noxfile.py" = ["ARG001"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.isort]
+known-first-party = ["django_signet"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ------------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+
+[tool.django-stubs]
+django_settings_module = "tests.settings"
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+# --------------------------------------------------- architecture fitness
+# Coupling is enforced, not merely documented. Each contract encodes one
+# boundary from the design: violating it fails CI.
+[tool.importlinter]
+root_package = "django_signet"
+
+[[tool.importlinter.contracts]]
+name = "tokens is a leaf - it knows nothing about storage, wire or DRF"
+type = "forbidden"
+source_modules = ["django_signet.tokens"]
+forbidden_modules = [
+    "django_signet.sessions",
+    "django_signet.transport",
+    "django_signet.csrf",
+    "django_signet.authentication",
+    "django_signet.serializers",
+    "django_signet.views",
+]
+
+[[tool.importlinter.contracts]]
+name = "transport moves bytes - it knows nothing about storage or auth"
+type = "forbidden"
+source_modules = ["django_signet.transport"]
+forbidden_modules = [
+    "django_signet.sessions",
+    "django_signet.authentication",
+    "django_signet.serializers",
+    "django_signet.views",
+]
+
+[[tool.importlinter.contracts]]
+name = "sessions persists and rotates - it never touches the wire"
+type = "forbidden"
+source_modules = ["django_signet.sessions"]
+forbidden_modules = [
+    "django_signet.transport",
+    "django_signet.csrf",
+    "django_signet.authentication",
+    "django_signet.serializers",
+    "django_signet.views",
+]
+
+[[tool.importlinter.contracts]]
+name = "foundation modules depend on nothing above them"
+type = "forbidden"
+source_modules = [
+    "django_signet.conf",
+    "django_signet.exceptions",
+    "django_signet.hashing",
+    "django_signet.signals",
+]
+forbidden_modules = [
+    "django_signet.tokens",
+    "django_signet.sessions",
+    "django_signet.transport",
+    "django_signet.csrf",
+    "django_signet.authentication",
+    "django_signet.serializers",
+    "django_signet.views",
+]
