@@ -77,7 +77,7 @@ support · Rust signing backend (see §14).
 ## 4. Architecture
 
 ```
-django_signet/
+src/django_signet/          # src layout: must be installed to be importable
 ├── conf.py              # setting() descriptor: class attr > project settings > default
 ├── exceptions.py        # internal taxonomy, all surfaced as 401
 ├── checks.py            # Django system checks
@@ -434,7 +434,28 @@ DRF 3.16+.
 
 ## 14. Packaging, and the Rust question
 
-Build backend: hatchling. Typed (`py.typed`), `mypy --strict` in CI.
+Build backend: hatchling, `src/` layout. Typed (`py.typed`, PEP 561).
+
+Quality gates, all enforced in CI and pre-commit:
+
+| Gate | Tool |
+|---|---|
+| Lint and format | `ruff check` + `ruff format --check` |
+| Types | `mypy --strict` |
+| **Architecture fitness** | `import-linter` contracts |
+| Complexity ceiling | ruff `C90`, max 8 |
+| Security static analysis | ruff `S` (bandit rules) + CodeQL |
+| Tests | pytest across the 8-cell matrix |
+| Adversarial suite | `tests/security/` as a separate blocking job |
+
+Coupling is enforced rather than documented. Four `import-linter` contracts
+encode the layering in §4: `tokens` is a leaf; `transport` knows nothing about
+storage or authentication; `sessions` never touches the wire; and `conf`,
+`exceptions`, `hashing` and `signals` depend on nothing above them. Crossing a
+boundary fails CI, so a coupling regression cannot land quietly.
+
+Release runs through GitHub Actions with PyPI Trusted Publishing (OIDC), so no
+API token exists in the repository or on any developer machine.
 
 **Rust is deferred, on measured evidence.** Benchmarked on this machine
 (PyJWT 2.10.1, HS256, 324-byte token):
@@ -480,3 +501,9 @@ Bloom/cuckoo filter of revoked `jti`s, eliminating the Redis round-trip for
    window.
 5. Published to PyPI with documentation covering migration from
    `djangorestframework-simplejwt`.
+6. Every quality gate in §14 green on `main`, and the repository carrying the
+   governance an open-source security library is expected to have: MIT licence,
+   a `SECURITY.md` with a private disclosure channel and stated response
+   targets, a code of conduct, a contributing guide that states the
+   architecture rules, issue and pull-request templates, CODEOWNERS, and
+   automated dependency updates.

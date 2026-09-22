@@ -6,7 +6,7 @@
 
 **Architecture:** Four layers. `tokens/` mints and verifies; `sessions/` persists token families behind a `TokenStore` port; `transport/` moves tokens over cookies or headers; and `authentication.py` / `serializers.py` / `views.py` form the DRF surface users subclass. Polymorphism comes from Template Method plus a `setting()` descriptor that lets a subclass's class attribute override the project settings dict.
 
-**Tech Stack:** Python 3.12–3.14, Django 5.2 LTS / 6.0 / 6.1, DRF 3.16+, PyJWT 2.10+, pytest + pytest-django, hatchling, nox, mypy.
+**Tech Stack:** Python 3.12–3.14, Django 5.2 LTS / 6.0 / 6.1, DRF 3.16+, PyJWT 2.10+. Tooling: hatchling (`src/` layout), ruff (lint + format), mypy `--strict`, import-linter (architecture fitness), pytest + pytest-django, nox, pre-commit, GitHub Actions with PyPI Trusted Publishing.
 
 **Spec:** `docs/superpowers/specs/2026-09-23-django-signet-design.md`
 
@@ -17,6 +17,17 @@
 - **Never persist a raw token.** Only `sha256` hex digests, except the grace cache within its window.
 - **Every authentication failure returns a generic DRF `AuthenticationFailed` (401).** Never disclose which check failed.
 - **Always pass `algorithms=[...]` explicitly to `jwt.decode`.** Never trust the token's own `alg` header.
+- **Layout:** `src/` layout. The package must be installed to be importable, so tests exercise what users actually receive rather than the working tree.
+- **Linting and formatting:** `ruff check` and `ruff format --check` must pass. Never hand-format; never add a blanket `# noqa`.
+- **Typing:** `mypy --strict` passes on `src/django_signet`. The package ships `py.typed` (PEP 561).
+- **Architecture fitness:** `lint-imports` must pass. Module boundaries are enforced by import-linter contracts in `pyproject.toml`, not by convention:
+  - `tokens` is a leaf — it knows nothing about storage, the wire, or DRF.
+  - `transport` moves bytes — it knows nothing about storage or authentication.
+  - `sessions` persists and rotates — it never touches the wire.
+  - `conf`, `exceptions`, `hashing`, `signals` depend on nothing above them.
+  Crossing a boundary is a design change, not an implementation detail: raise it rather than adding the import.
+- **Complexity ceiling:** cyclomatic complexity 8 (ruff `C90`). A function that trips it wants splitting, not an ignore.
+- **Every task ends with the same gate before its commit:** `ruff check . && ruff format --check . && mypy src/django_signet && lint-imports`, plus that task's tests.
 - All files stay under 500 lines.
 - Every public class ships complete, secure, working defaults. Overriding is optional refinement, never required assembly.
 - Hook names (`get_claims`, `set_cookies`, `on_reuse_detected`, `get_user`, `validate_claims`) are a frozen API contract from v1.
@@ -27,52 +38,88 @@
 
 ## File Structure
 
+### Repository shell (Task 0)
+
 | File | Responsibility |
 |---|---|
-| `pyproject.toml` | Packaging, dependencies, tool config |
-| `django_signet/conf.py` | `setting()` descriptor + `DEFAULTS` |
-| `django_signet/exceptions.py` | Internal error taxonomy |
-| `django_signet/signals.py` | `token_issued`, `token_refreshed`, `token_reuse_detected`, `family_revoked` |
-| `django_signet/tokens/backends.py` | `SigningBackend` port; HMAC and RSA backends |
-| `django_signet/tokens/claims.py` | Claim construction and validation |
-| `django_signet/tokens/base.py` | `Token` ABC |
-| `django_signet/tokens/access.py` | `AccessToken` |
-| `django_signet/tokens/refresh.py` | `RefreshToken` |
-| `django_signet/sessions/models.py` | `TokenFamily`, `IssuedToken` |
-| `django_signet/sessions/stores/base.py` | `TokenStore` ABC, `ConsumeResult`, `Outcome` |
-| `django_signet/sessions/stores/orm.py` | ORM adapter with atomic consume |
-| `django_signet/sessions/stores/cache.py` | Cache adapter with atomic CAS |
-| `django_signet/sessions/rotation.py` | `RotationPolicy`: rotate, detect reuse, grace window |
-| `django_signet/transport/base.py` | `Transport` ABC |
-| `django_signet/transport/cookie.py` | `CookiePolicy`, `CookieTransport` |
-| `django_signet/transport/header.py` | `HeaderTransport`, `HybridTransport` |
-| `django_signet/csrf.py` | Double-submit issue and validate |
-| `django_signet/authentication.py` | DRF authentication classes |
-| `django_signet/serializers.py` | Login / refresh / verify serializers |
-| `django_signet/views.py` | Template Method views |
-| `django_signet/urls.py` | URL wiring |
-| `django_signet/checks.py` | Django system checks |
+| `pyproject.toml` | Packaging, dependencies, ruff / mypy / coverage / import-linter config |
+| `noxfile.py` | `lint`, `typecheck`, `architecture`, `tests` — mirrors CI |
+| `.pre-commit-config.yaml` | ruff, ruff-format, mypy, import-linter, private-key detection |
+| `.editorconfig`, `.gitignore` | Editor and VCS hygiene |
+| `LICENSE` | MIT |
+| `SECURITY.md` | Private disclosure policy, response targets, scope |
+| `CONTRIBUTING.md` | Setup, the four gates, the architecture rules |
+| `CODE_OF_CONDUCT.md` | Contributor Covenant 2.1 |
+| `.github/workflows/ci.yml` | Quality job + 8-cell test matrix + adversarial security gate |
+| `.github/workflows/codeql.yml` | Static security analysis, weekly and per PR |
+| `.github/workflows/release.yml` | Build and publish via PyPI Trusted Publishing (OIDC, no tokens) |
+| `.github/dependabot.yml` | Weekly pip and actions updates |
+| `.github/CODEOWNERS`, `PULL_REQUEST_TEMPLATE.md`, `ISSUE_TEMPLATE/` | Review routing and intake |
+
+### Library (Tasks 1–13)
+
+| File | Responsibility |
+|---|---|
+| `src/django_signet/py.typed` | PEP 561 marker |
+| `src/django_signet/conf.py` | `setting()` descriptor + `DEFAULTS` |
+| `src/django_signet/exceptions.py` | Internal error taxonomy |
+| `src/django_signet/signals.py` | `token_issued`, `token_refreshed`, `token_reuse_detected`, `family_revoked` |
+| `src/django_signet/tokens/backends.py` | `SigningBackend` port; HMAC and RSA backends |
+| `src/django_signet/tokens/claims.py` | Claim construction and validation |
+| `src/django_signet/tokens/base.py` | `Token` ABC |
+| `src/django_signet/tokens/access.py` | `AccessToken` |
+| `src/django_signet/tokens/refresh.py` | `RefreshToken` |
+| `src/django_signet/sessions/models.py` | `TokenFamily`, `IssuedToken` |
+| `src/django_signet/sessions/stores/base.py` | `TokenStore` ABC, `ConsumeResult`, `Outcome` |
+| `src/django_signet/sessions/stores/orm.py` | ORM adapter with atomic consume |
+| `src/django_signet/sessions/stores/cache.py` | Cache adapter with atomic CAS |
+| `src/django_signet/sessions/rotation.py` | `RotationPolicy`: rotate, detect reuse, grace window |
+| `src/django_signet/transport/base.py` | `Transport` ABC |
+| `src/django_signet/transport/cookie.py` | `CookiePolicy`, `CookieTransport` |
+| `src/django_signet/transport/header.py` | `HeaderTransport`, `HybridTransport` |
+| `src/django_signet/csrf.py` | Double-submit issue and validate |
+| `src/django_signet/authentication.py` | DRF authentication classes |
+| `src/django_signet/serializers.py` | Login / refresh / verify serializers |
+| `src/django_signet/views.py` | Template Method views |
+| `src/django_signet/urls.py` | URL wiring |
+| `src/django_signet/checks.py` | Django system checks |
 | `tests/` | Mirror of the above, plus `tests/security/` |
 
 ---
 
-## Task 1: Project scaffolding, settings resolution, exceptions
+## Task 0: Repository, tooling and open-source foundation
+
+Everything else builds on this. It creates no library code — it creates the
+shell that every later task is graded inside: the `src/` layout, the linter
+and type-checker configuration, the architecture-fitness contracts that keep
+coupling honest, and the public-repository files an open-source security
+library is expected to have.
 
 **Files:**
-- Create: `pyproject.toml`, `django_signet/__init__.py`, `django_signet/apps.py`, `django_signet/conf.py`, `django_signet/exceptions.py`, `django_signet/signals.py`
-- Create: `tests/conftest.py`, `tests/settings.py`, `tests/test_conf.py`
+- Create: `pyproject.toml`, `noxfile.py`, `.pre-commit-config.yaml`, `.editorconfig`, `.gitignore`
+- Create: `LICENSE`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`
+- Create: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/workflows/codeql.yml`
+- Create: `.github/dependabot.yml`, `.github/CODEOWNERS`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/ISSUE_TEMPLATE/bug_report.yml`, `.github/ISSUE_TEMPLATE/feature_request.yml`, `.github/ISSUE_TEMPLATE/config.yml`
+- Create: `src/django_signet/__init__.py`, `src/django_signet/py.typed`
 
 **Interfaces:**
-- Produces: `setting(name, default=_UNSET)` descriptor; `DEFAULTS: dict[str, Any]`; exception classes `SignetError`, `TokenInvalid`, `TokenExpired`, `TokenRevoked`, `TokenReused`, `CSRFFailed`, `TransportError`; signals `token_issued`, `token_refreshed`, `token_reuse_detected`, `family_revoked`.
+- Produces: the `src/` layout that every later task's paths assume; `ruff`, `mypy --strict`, `import-linter` and `pytest` all runnable and green on an empty package; CI that gates every pull request.
 
-- [ ] **Step 1: Create the virtualenv and install dependencies**
+**Why `src/` layout:** with a flat layout, `import django_signet` from the
+repository root silently picks up the source directory rather than the
+installed distribution, so tests can pass against files that were never
+packaged. The `src/` layout makes that impossible — the package must be
+installed to be importable, so the tests exercise what users receive.
+
+- [ ] **Step 1: Create the virtualenv and the development toolchain**
 
 ```bash
 cd /home/p0s3id0n/Projects/Personal/django-jwt-httponly
 python3 -m venv .venv
 .venv/bin/pip install -U pip
 .venv/bin/pip install "django>=6.0" "djangorestframework>=3.16" "pyjwt>=2.10" \
-    pytest pytest-django pytest-cov mypy hatchling
+    pytest pytest-django pytest-cov ruff mypy django-stubs \
+    djangorestframework-stubs import-linter nox pre-commit build twine
 .venv/bin/python -c "import django, rest_framework, jwt; print(django.get_version())"
 ```
 
@@ -92,19 +139,24 @@ description = "Polymorphic, secure-by-default JWT authentication for Django REST
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "p0s3id0n" }]
-keywords = ["django", "djangorestframework", "jwt", "authentication", "cookies"]
+keywords = ["django", "djangorestframework", "jwt", "authentication", "cookies", "security"]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
     "Framework :: Django",
     "Framework :: Django :: 5.2",
     "Framework :: Django :: 6.0",
     "Framework :: Django :: 6.1",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Security",
+    "Typing :: Typed",
 ]
 dependencies = [
     "django>=5.2",
@@ -115,20 +167,794 @@ dependencies = [
 [project.optional-dependencies]
 rsa = ["cryptography>=42"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["django_signet"]
+[project.urls]
+Homepage = "https://github.com/p0s3id0n/django-signet"
+Documentation = "https://github.com/p0s3id0n/django-signet#readme"
+Changelog = "https://github.com/p0s3id0n/django-signet/blob/main/CHANGELOG.md"
+Issues = "https://github.com/p0s3id0n/django-signet/issues"
+Source = "https://github.com/p0s3id0n/django-signet"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/django_signet"]
+
+# ----------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
 testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+filterwarnings = ["error"]
 
+[tool.coverage.run]
+source = ["django_signet"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "\\.\\.\\."]
+
+# ------------------------------------------------------------------- ruff
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade - keeps us on current Python idioms
+    "B",         # bugbear
+    "A",         # shadowing builtins
+    "C4",        # comprehensions
+    "DTZ",       # naive datetimes: a bug class in an auth library
+    "S",         # bandit security rules
+    "SIM",       # simplification
+    "PTH",       # pathlib over os.path
+    "PT",        # pytest style
+    "TID",       # tidy imports
+    "ARG",       # unused arguments
+    "RUF",
+    "C90",       # mccabe complexity - a code-smell brake
+]
+ignore = [
+    "S105",  # hardcoded-password-string: too noisy around claim names
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, use throwaway secrets, and take unused fixtures by design.
+"tests/**" = ["S101", "S105", "S106", "ARG001", "ARG002"]
+"noxfile.py" = ["ARG001"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.isort]
+known-first-party = ["django_signet"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ------------------------------------------------------------------- mypy
 [tool.mypy]
+python_version = "3.12"
 strict = true
-plugins = []
-ignore_missing_imports = true
+warn_unreachable = true
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+
+[tool.django-stubs]
+django_settings_module = "tests.settings"
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+# --------------------------------------------------- architecture fitness
+# Coupling is enforced, not merely documented. Each contract encodes one
+# boundary from the design: violating it fails CI.
+[tool.importlinter]
+root_package = "django_signet"
+
+[[tool.importlinter.contracts]]
+name = "tokens is a leaf - it knows nothing about storage, wire or DRF"
+type = "forbidden"
+source_modules = ["django_signet.tokens"]
+forbidden_modules = [
+    "django_signet.sessions",
+    "django_signet.transport",
+    "django_signet.csrf",
+    "django_signet.authentication",
+    "django_signet.serializers",
+    "django_signet.views",
+]
+
+[[tool.importlinter.contracts]]
+name = "transport moves bytes - it knows nothing about storage or auth"
+type = "forbidden"
+source_modules = ["django_signet.transport"]
+forbidden_modules = [
+    "django_signet.sessions",
+    "django_signet.authentication",
+    "django_signet.serializers",
+    "django_signet.views",
+]
+
+[[tool.importlinter.contracts]]
+name = "sessions persists and rotates - it never touches the wire"
+type = "forbidden"
+source_modules = ["django_signet.sessions"]
+forbidden_modules = [
+    "django_signet.transport",
+    "django_signet.csrf",
+    "django_signet.authentication",
+    "django_signet.serializers",
+    "django_signet.views",
+]
+
+[[tool.importlinter.contracts]]
+name = "foundation modules depend on nothing above them"
+type = "forbidden"
+source_modules = [
+    "django_signet.conf",
+    "django_signet.exceptions",
+    "django_signet.hashing",
+    "django_signet.signals",
+]
+forbidden_modules = [
+    "django_signet.tokens",
+    "django_signet.sessions",
+    "django_signet.transport",
+    "django_signet.csrf",
+    "django_signet.authentication",
+    "django_signet.serializers",
+    "django_signet.views",
+]
 ```
 
-- [ ] **Step 3: Write the test settings and conftest**
+- [ ] **Step 3: Create the package shell and confirm the toolchain runs**
+
+```bash
+mkdir -p src/django_signet
+printf '__version__ = "0.1.0"\n' > src/django_signet/__init__.py
+touch src/django_signet/py.typed          # PEP 561: ship the type information
+
+printf '%s\n' '__pycache__/' '*.py[cod]' '.venv/' 'dist/' 'build/' '*.egg-info/' \
+  '.nox/' '.tox/' '.pytest_cache/' '.mypy_cache/' '.ruff_cache/' '.coverage' \
+  'htmlcov/' '*.sqlite3' '.env' '.superpowers/' > .gitignore
+
+.venv/bin/pip install -e .
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+```
+
+Expected: `ruff check` reports "All checks passed"; `ruff format --check` reports the files are already formatted.
+
+- [ ] **Step 4: Write the editor and pre-commit configuration**
+
+```bash
+cat > .editorconfig <<'EOF'
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.py]
+indent_size = 4
+max_line_length = 88
+
+[*.{yml,yaml,toml,json,md}]
+indent_size = 2
+EOF
+
+cat > .pre-commit-config.yaml <<'EOF'
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: .venv/bin/mypy src/django_signet
+        language: system
+        pass_filenames: false
+      - id: import-linter
+        name: import-linter (architecture fitness)
+        entry: .venv/bin/lint-imports
+        language: system
+        pass_filenames: false
+EOF
+
+.venv/bin/pre-commit install
+```
+
+If the pinned `rev` values are stale, run `.venv/bin/pre-commit autoupdate`
+and commit the result rather than editing them by hand.
+
+- [ ] **Step 5: Write the nox sessions**
+
+```python
+# noxfile.py
+"""Development task runner.
+
+The CI matrix mirrors these sessions, so `nox` locally reproduces CI.
+"""
+
+import nox
+
+nox.options.sessions = ["lint", "typecheck", "architecture", "tests"]
+
+PYTHONS = ["3.12", "3.13", "3.14"]
+DJANGOS = ["5.2", "6.0", "6.1"]
+
+
+@nox.session(python="3.13")
+def lint(session: nox.Session) -> None:
+    session.install("ruff")
+    session.run("ruff", "check", ".")
+    session.run("ruff", "format", "--check", ".")
+
+
+@nox.session(python="3.13")
+def typecheck(session: nox.Session) -> None:
+    session.install("mypy", "django-stubs", "djangorestframework-stubs", "-e", ".")
+    session.run("mypy", "src/django_signet")
+
+
+@nox.session(python="3.13")
+def architecture(session: nox.Session) -> None:
+    """Fail if any module imports across a boundary the design forbids."""
+    session.install("import-linter", "-e", ".")
+    session.run("lint-imports")
+
+
+@nox.session(python=PYTHONS)
+@nox.parametrize("django", DJANGOS)
+def tests(session: nox.Session, django: str) -> None:
+    if django == "5.2" and session.python == "3.14":
+        session.skip("Django 5.2 does not support Python 3.14")
+    session.install(
+        f"django~={django}.0",
+        "djangorestframework>=3.16",
+        "pyjwt>=2.10",
+        "pytest",
+        "pytest-django",
+        "pytest-cov",
+    )
+    session.install("-e", ".")
+    session.run("pytest", "-q")
+```
+
+- [ ] **Step 6: Write the open-source governance files**
+
+```bash
+cat > LICENSE <<'EOF'
+MIT License
+
+Copyright (c) 2026 django-signet contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+EOF
+
+cat > SECURITY.md <<'EOF'
+# Security Policy
+
+## Reporting a vulnerability
+
+**Do not open a public issue for a security vulnerability.**
+
+Report it privately through GitHub Security Advisories:
+<https://github.com/p0s3id0n/django-signet/security/advisories/new>
+
+Please include the affected version, a description of the issue, and
+reproduction steps or a proof of concept if you have one.
+
+## What to expect
+
+| Stage | Target |
+|---|---|
+| Acknowledgement | 48 hours |
+| Initial assessment | 7 days |
+| Fix or mitigation plan | 30 days |
+
+Reporters are credited in the advisory and the changelog unless they ask not
+to be. We follow coordinated disclosure: the advisory is published once a fix
+is available, or after 90 days, whichever comes first.
+
+## Supported versions
+
+Until 1.0, only the latest minor release receives security fixes.
+
+## Scope
+
+In scope: authentication bypass, token forgery, privilege escalation, session
+fixation, CSRF bypass, token leakage, and timing attacks in this library.
+
+Out of scope: vulnerabilities in Django, DRF or PyJWT themselves (report those
+upstream); insecure configuration explicitly warned about by our system
+checks; and denial of service through unbounded request volume, which belongs
+to your rate limiter.
+
+## Design notes for reviewers
+
+- Refresh tokens are persisted only as SHA-256 digests.
+- `jwt.decode` is always called with an explicit single-element `algorithms`
+  list; the token's own `alg` header is never trusted.
+- Every authentication failure returns one generic 401 to avoid oracles.
+- The adversarial suite in `tests/security/` gates every release.
+EOF
+
+cat > CODE_OF_CONDUCT.md <<'EOF'
+# Contributor Covenant Code of Conduct
+
+## Our Pledge
+
+We as members, contributors, and leaders pledge to make participation in our
+community a harassment-free experience for everyone, regardless of age, body
+size, visible or invisible disability, ethnicity, sex characteristics, gender
+identity and expression, level of experience, education, socio-economic
+status, nationality, personal appearance, race, religion, or sexual identity
+and orientation.
+
+## Our Standards
+
+Examples of behavior that contributes to a positive environment:
+
+- Demonstrating empathy and kindness toward other people
+- Being respectful of differing opinions, viewpoints, and experiences
+- Giving and gracefully accepting constructive feedback
+- Accepting responsibility and apologizing to those affected by our mistakes
+- Focusing on what is best for the overall community
+
+Examples of unacceptable behavior:
+
+- Sexualized language or imagery, and sexual attention or advances of any kind
+- Trolling, insulting or derogatory comments, and personal or political attacks
+- Public or private harassment
+- Publishing others' private information without their explicit permission
+- Other conduct which could reasonably be considered inappropriate in a
+  professional setting
+
+## Enforcement
+
+Instances of abusive, harassing, or otherwise unacceptable behavior may be
+reported to the project maintainers. All complaints will be reviewed and
+investigated promptly and fairly. Maintainers are obligated to respect the
+privacy and security of the reporter.
+
+## Attribution
+
+This Code of Conduct is adapted from the [Contributor Covenant][homepage],
+version 2.1, available at
+<https://www.contributor-covenant.org/version/2/1/code_of_conduct.html>.
+
+[homepage]: https://www.contributor-covenant.org
+EOF
+```
+
+- [ ] **Step 7: Write the contributing guide**
+
+```bash
+cat > CONTRIBUTING.md <<'EOF'
+# Contributing to django-signet
+
+Thank you for considering a contribution.
+
+## Ground rules
+
+This is a security library. Two consequences follow:
+
+1. **Never open a public issue for a vulnerability.** See [SECURITY.md](SECURITY.md).
+2. **Every change to authentication, token handling, or cookies needs a test
+   that fails without it.** "It works locally" is not evidence.
+
+## Getting set up
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -e ".[rsa]"
+.venv/bin/pip install nox pre-commit
+.venv/bin/pre-commit install
+```
+
+## Before you open a pull request
+
+```bash
+nox            # lint, typecheck, architecture, and the full matrix
+```
+
+Or individually:
+
+```bash
+nox -s lint typecheck architecture
+nox -s tests
+```
+
+All four must pass. CI runs the same sessions.
+
+## Architecture rules
+
+Module boundaries are enforced by `import-linter` contracts in
+`pyproject.toml`, not by convention:
+
+- `tokens` is a leaf: it knows nothing about storage, the wire, or DRF.
+- `transport` moves bytes: it knows nothing about storage or authentication.
+- `sessions` persists and rotates: it never touches the wire.
+- `conf`, `exceptions`, `hashing` and `signals` depend on nothing above them.
+
+If your change needs to cross a boundary, that is a design discussion — open
+an issue before writing the code.
+
+## Style
+
+- `ruff` handles formatting and linting; do not hand-format.
+- Maximum cyclomatic complexity is 8. If a function trips it, it wants
+  splitting rather than an ignore comment.
+- Public API needs type hints; `mypy --strict` must pass.
+- New behaviour is added by subclassing hooks, not by adding settings flags.
+  If your feature needs a new global setting, say why in the issue first.
+
+## Commit messages
+
+Conventional Commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`.
+Security fixes use `fix(security):` and reference the advisory.
+
+## Adding a hook
+
+Hook names are a frozen public API. Adding one is fine; renaming or removing
+one is a breaking change and waits for a major release.
+EOF
+```
+
+- [ ] **Step 8: Write the GitHub workflows**
+
+```bash
+mkdir -p .github/workflows .github/ISSUE_TEMPLATE
+
+cat > .github/workflows/ci.yml <<'EOF'
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: lint, types and architecture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install ruff mypy django-stubs djangorestframework-stubs import-linter
+      - run: pip install -e .
+      - name: ruff check
+        run: ruff check --output-format=github .
+      - name: ruff format
+        run: ruff format --check .
+      - name: mypy
+        run: mypy src/django_signet
+      - name: architecture fitness
+        run: lint-imports
+
+  test:
+    name: py${{ matrix.python }} / django${{ matrix.django }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+        django: ["5.2", "6.0", "6.1"]
+        exclude:
+          # Django 5.2 does not support Python 3.14.
+          - python: "3.14"
+            django: "5.2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install "django~=${{ matrix.django }}.0" djangorestframework pyjwt
+              pytest pytest-django pytest-cov
+      - run: pip install -e ".[rsa]"
+      - run: pytest -q --cov --cov-report=xml
+      - uses: codecov/codecov-action@v5
+        if: matrix.python == '3.13' && matrix.django == '6.1'
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+        continue-on-error: true
+
+  security-gate:
+    name: adversarial suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e ".[rsa]" pytest pytest-django
+      - name: the adversarial suite must pass
+        run: pytest tests/security/ -v
+EOF
+
+cat > .github/workflows/codeql.yml <<'EOF'
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+EOF
+
+cat > .github/workflows/release.yml <<'EOF'
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/django-signet
+    permissions:
+      id-token: write   # PyPI Trusted Publishing - no API token is stored
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+EOF
+```
+
+Trusted Publishing means no PyPI token ever exists in the repository or on a
+developer machine. Configure it once at
+<https://pypi.org/manage/account/publishing/>, naming this repository, the
+workflow `release.yml`, and the environment `pypi`.
+
+- [ ] **Step 9: Write the repository metadata and templates**
+
+```bash
+cat > .github/dependabot.yml <<'EOF'
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      dev-dependencies:
+        patterns: ["ruff", "mypy", "pytest*", "nox", "pre-commit"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+EOF
+
+printf '* @p0s3id0n\n' > .github/CODEOWNERS
+
+cat > .github/PULL_REQUEST_TEMPLATE.md <<'EOF'
+## What this changes
+
+<!-- One or two sentences. Link the issue if there is one. -->
+
+## Why
+
+<!-- The problem this solves. -->
+
+## Checklist
+
+- [ ] `nox -s lint typecheck architecture` passes
+- [ ] `nox -s tests` passes
+- [ ] New behaviour has a test that fails without the change
+- [ ] Touches authentication, tokens or cookies? Then `tests/security/` covers it
+- [ ] Public API changes are noted in `CHANGELOG.md`
+- [ ] No new global setting was added where a subclass hook would do
+
+## Security impact
+
+<!-- State "none" explicitly if there is none. If this changes token
+     handling, cookie flags, or the authentication path, describe the
+     threat model change. -->
+EOF
+
+cat > .github/ISSUE_TEMPLATE/config.yml <<'EOF'
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/p0s3id0n/django-signet/security/advisories/new
+    about: Report privately. Never open a public issue for a vulnerability.
+  - name: Question or discussion
+    url: https://github.com/p0s3id0n/django-signet/discussions
+    about: Ask how to use the library.
+EOF
+
+cat > .github/ISSUE_TEMPLATE/bug_report.yml <<'EOF'
+name: Bug report
+description: Something behaves differently than documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a security vulnerability, stop and report it privately:
+        https://github.com/p0s3id0n/django-signet/security/advisories/new
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: django-signet, Django, DRF and Python versions
+      placeholder: "django-signet 0.1.0, Django 6.1, DRF 3.18, Python 3.13"
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations: { required: true }
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: Settings, the authentication class in use, and the request made.
+      render: python
+    validations: { required: true }
+EOF
+
+cat > .github/ISSUE_TEMPLATE/feature_request.yml <<'EOF'
+name: Feature request
+description: Suggest a capability
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you unable to do today?
+    validations: { required: true }
+  - type: textarea
+    id: subclass
+    attributes:
+      label: Can a subclass already do this?
+      description: >
+        Most behaviour is meant to be changed by overriding a hook rather than
+        by adding a setting. Say what you tried.
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      render: python
+EOF
+```
+
+- [ ] **Step 10: Verify the whole toolchain is green**
+
+```bash
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/lint-imports
+.venv/bin/python -m build && .venv/bin/twine check dist/*
+```
+
+Expected: ruff passes, `lint-imports` reports all contracts kept (trivially,
+with only `__init__.py` present), and `twine check` reports PASSED. `mypy` is
+deferred to Task 1, when there is code with annotations to check.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add -A
+git commit -m "chore: repository, tooling and open-source foundation
+
+src layout, ruff, mypy strict, import-linter architecture contracts,
+pre-commit, nox, CI matrix, CodeQL, Trusted Publishing release workflow,
+and the governance files a public security library needs."
+```
+
+---
+
+## Task 1: Project scaffolding, settings resolution, exceptions
+
+**Files:**
+- Create: `src/django_signet/apps.py`, `src/django_signet/conf.py`, `src/django_signet/exceptions.py`, `src/django_signet/signals.py`
+- Create: `tests/conftest.py`, `tests/settings.py`, `tests/test_conf.py`
+
+**Interfaces:**
+- Produces: `setting(name, default=_UNSET)` descriptor; `DEFAULTS: dict[str, Any]`; exception classes `SignetError`, `TokenInvalid`, `TokenExpired`, `TokenRevoked`, `TokenReused`, `CSRFFailed`, `TransportError`; signals `token_issued`, `token_refreshed`, `token_reuse_detected`, `family_revoked`.
+
+- [ ] **Step 1: Write the test settings and conftest**
 
 ```python
 # tests/settings.py
@@ -174,7 +1000,7 @@ def user(db):
     )
 ```
 
-- [ ] **Step 4: Write the failing test for settings resolution**
+- [ ] **Step 2: Write the failing test for settings resolution**
 
 ```python
 # tests/test_conf.py
@@ -211,20 +1037,20 @@ def test_readable_on_the_class_not_only_the_instance():
     assert Base.lifetime == timedelta(minutes=5)
 ```
 
-- [ ] **Step 5: Run the test to verify it fails**
+- [ ] **Step 3: Run the test to verify it fails**
 
 Run: `.venv/bin/pytest tests/test_conf.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.conf'`
 
-- [ ] **Step 6: Write the minimal implementation**
+- [ ] **Step 4: Write the minimal implementation**
 
 ```python
-# django_signet/__init__.py
+# src/django_signet/__init__.py
 __version__ = "0.1.0"
 ```
 
 ```python
-# django_signet/apps.py
+# src/django_signet/apps.py
 from django.apps import AppConfig
 
 
@@ -236,7 +1062,7 @@ class SignetConfig(AppConfig):
 ```
 
 ```python
-# django_signet/conf.py
+# src/django_signet/conf.py
 from __future__ import annotations
 
 from datetime import timedelta
@@ -299,7 +1125,7 @@ class setting:
 ```
 
 ```python
-# django_signet/exceptions.py
+# src/django_signet/exceptions.py
 class SignetError(Exception):
     """Base for every internal Signet failure.
 
@@ -333,7 +1159,7 @@ class TransportError(SignetError):
 ```
 
 ```python
-# django_signet/signals.py
+# src/django_signet/signals.py
 import django.dispatch
 
 token_issued = django.dispatch.Signal()         # user, family, request
@@ -342,15 +1168,25 @@ token_reuse_detected = django.dispatch.Signal() # user, family, request
 family_revoked = django.dispatch.Signal()       # user, family, reason
 ```
 
-- [ ] **Step 7: Run the test to verify it passes**
+- [ ] **Step 5: Run the test to verify it passes**
 
 Run: `.venv/bin/pytest tests/test_conf.py -v`
 Expected: 4 passed.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Run the quality gates**
 
 ```bash
-git add pyproject.toml django_signet/ tests/
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/mypy src/django_signet
+.venv/bin/lint-imports
+```
+
+Expected: all three clean. From here on every task ends with this gate before its commit; `conf.py` is the first module `mypy --strict` sees, so fix any annotation gaps now rather than accumulating them.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add pyproject.toml src/django_signet/ tests/
 git commit -m "feat: package scaffolding, settings resolution, exception taxonomy"
 ```
 
@@ -359,7 +1195,7 @@ git commit -m "feat: package scaffolding, settings resolution, exception taxonom
 ## Task 2: Signing backends
 
 **Files:**
-- Create: `django_signet/tokens/__init__.py`, `django_signet/tokens/backends.py`
+- Create: `src/django_signet/tokens/__init__.py`, `src/django_signet/tokens/backends.py`
 - Test: `tests/tokens/test_backends.py`
 
 **Interfaces:**
@@ -441,11 +1277,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.tokens'`
 - [ ] **Step 3: Write the minimal implementation**
 
 ```python
-# django_signet/tokens/__init__.py
+# src/django_signet/tokens/__init__.py
 ```
 
 ```python
-# django_signet/tokens/backends.py
+# src/django_signet/tokens/backends.py
 from __future__ import annotations
 
 import abc
@@ -609,7 +1445,7 @@ Expected: 7 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add django_signet/tokens/ tests/tokens/
+git add src/django_signet/tokens/ tests/tokens/
 git commit -m "feat: signing backend port with HMAC and RSA implementations"
 ```
 
@@ -618,7 +1454,7 @@ git commit -m "feat: signing backend port with HMAC and RSA implementations"
 ## Task 3: Token classes and claims
 
 **Files:**
-- Create: `django_signet/hashing.py`, `django_signet/tokens/claims.py`, `django_signet/tokens/base.py`, `django_signet/tokens/access.py`, `django_signet/tokens/refresh.py`
+- Create: `src/django_signet/hashing.py`, `src/django_signet/tokens/claims.py`, `src/django_signet/tokens/base.py`, `src/django_signet/tokens/access.py`, `src/django_signet/tokens/refresh.py`
 - Test: `tests/tokens/test_tokens.py`
 
 **Interfaces:**
@@ -701,7 +1537,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.hashing'
 - [ ] **Step 3: Write the minimal implementation**
 
 ```python
-# django_signet/hashing.py
+# src/django_signet/hashing.py
 import hashlib
 
 
@@ -716,7 +1552,7 @@ def token_digest(raw: str) -> str:
 ```
 
 ```python
-# django_signet/tokens/claims.py
+# src/django_signet/tokens/claims.py
 from __future__ import annotations
 
 import uuid
@@ -768,7 +1604,7 @@ def build_claims(
 ```
 
 ```python
-# django_signet/tokens/base.py
+# src/django_signet/tokens/base.py
 from __future__ import annotations
 
 import abc
@@ -842,7 +1678,7 @@ class Token(abc.ABC):
 ```
 
 ```python
-# django_signet/tokens/access.py
+# src/django_signet/tokens/access.py
 from __future__ import annotations
 
 from django_signet.conf import setting
@@ -855,7 +1691,7 @@ class AccessToken(Token):
 ```
 
 ```python
-# django_signet/tokens/refresh.py
+# src/django_signet/tokens/refresh.py
 from __future__ import annotations
 
 from typing import Any
@@ -888,7 +1724,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add django_signet/hashing.py django_signet/tokens/ tests/tokens/
+git add src/django_signet/hashing.py django_signet/tokens/ tests/tokens/
 git commit -m "feat: access and refresh token classes with type-confusion guards"
 ```
 
@@ -897,13 +1733,13 @@ git commit -m "feat: access and refresh token classes with type-confusion guards
 ## Task 4: Session models
 
 **Files:**
-- Create: `django_signet/sessions/__init__.py`, `django_signet/sessions/models.py`, `django_signet/models.py`, `django_signet/migrations/__init__.py`
+- Create: `src/django_signet/sessions/__init__.py`, `src/django_signet/sessions/models.py`, `src/django_signet/models.py`, `src/django_signet/migrations/__init__.py`
 - Test: `tests/sessions/test_models.py`
 
 **Interfaces:**
 - Produces: `TokenFamily` (`id: UUID` pk, `user` FK, `created_at`, `last_used_at`, `expires_at`, `revoked_at`, `revoked_reason`, `user_agent`, `ip_address`, property `is_live: bool`, method `revoke(reason)`); `IssuedToken` (`id: UUID` pk, `family` FK, `digest` unique, `issued_at`, `expires_at`, `consumed_at`); `RevocationReason` text-choices enum with members `LOGOUT`, `LOGOUT_ALL`, `REUSE_DETECTED`, `PASSWORD_CHANGE`, `EXPIRED`, `ADMIN`.
 
-Django discovers models at `django_signet.models`, so `django_signet/models.py` re-exports from `sessions/models.py` to keep the package layout by responsibility.
+Django discovers models at `django_signet.models`, so `src/django_signet/models.py` re-exports from `sessions/models.py` to keep the package layout by responsibility.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -981,11 +1817,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.models'`
 - [ ] **Step 3: Write the minimal implementation**
 
 ```python
-# django_signet/sessions/__init__.py
+# src/django_signet/sessions/__init__.py
 ```
 
 ```python
-# django_signet/sessions/models.py
+# src/django_signet/sessions/models.py
 from __future__ import annotations
 
 import uuid
@@ -1067,7 +1903,7 @@ class IssuedToken(models.Model):
 ```
 
 ```python
-# django_signet/models.py
+# src/django_signet/models.py
 """Django discovers models here. The implementation lives in ``sessions``
 so the package stays organised by responsibility rather than by framework
 convention."""
@@ -1084,11 +1920,11 @@ __all__ = ["IssuedToken", "RevocationReason", "TokenFamily"]
 - [ ] **Step 4: Generate the migration**
 
 ```bash
-mkdir -p django_signet/migrations && touch django_signet/migrations/__init__.py
+mkdir -p src/django_signet/migrations && touch src/django_signet/migrations/__init__.py
 DJANGO_SETTINGS_MODULE=tests.settings .venv/bin/python -m django makemigrations django_signet
 ```
 
-Expected: creates `django_signet/migrations/0001_initial.py` listing `TokenFamily` and `IssuedToken`.
+Expected: creates `src/django_signet/migrations/0001_initial.py` listing `TokenFamily` and `IssuedToken`.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
@@ -1103,7 +1939,7 @@ Expected: exit code 0, "No changes detected".
 - [ ] **Step 7: Commit**
 
 ```bash
-git add django_signet/sessions/ django_signet/models.py django_signet/migrations/ tests/sessions/
+git add src/django_signet/sessions/ django_signet/models.py django_signet/migrations/ tests/sessions/
 git commit -m "feat: TokenFamily and IssuedToken models with digest-only storage"
 ```
 
@@ -1112,7 +1948,7 @@ git commit -m "feat: TokenFamily and IssuedToken models with digest-only storage
 ## Task 5: TokenStore port and ORM adapter
 
 **Files:**
-- Create: `django_signet/sessions/stores/__init__.py`, `django_signet/sessions/stores/base.py`, `django_signet/sessions/stores/orm.py`
+- Create: `src/django_signet/sessions/stores/__init__.py`, `src/django_signet/sessions/stores/base.py`, `src/django_signet/sessions/stores/orm.py`
 - Test: `tests/sessions/test_orm_store.py`
 
 **Interfaces:**
@@ -1245,11 +2081,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.sessions
 - [ ] **Step 3: Write the minimal implementation**
 
 ```python
-# django_signet/sessions/stores/__init__.py
+# src/django_signet/sessions/stores/__init__.py
 ```
 
 ```python
-# django_signet/sessions/stores/base.py
+# src/django_signet/sessions/stores/base.py
 from __future__ import annotations
 
 import abc
@@ -1322,7 +2158,7 @@ class TokenStore(abc.ABC):
 ```
 
 ```python
-# django_signet/sessions/stores/orm.py
+# src/django_signet/sessions/stores/orm.py
 from __future__ import annotations
 
 import uuid
@@ -1440,7 +2276,7 @@ and delete `_get_family_count`. Prefer this simpler form if the first does not p
 - [ ] **Step 5: Commit**
 
 ```bash
-git add django_signet/sessions/stores/ tests/sessions/test_orm_store.py
+git add src/django_signet/sessions/stores/ tests/sessions/test_orm_store.py
 git commit -m "feat: TokenStore port with atomic-consume ORM adapter"
 ```
 
@@ -1449,7 +2285,7 @@ git commit -m "feat: TokenStore port with atomic-consume ORM adapter"
 ## Task 6: Cache store adapter
 
 **Files:**
-- Create: `django_signet/sessions/stores/cache.py`
+- Create: `src/django_signet/sessions/stores/cache.py`
 - Test: `tests/sessions/test_cache_store.py`
 
 **Interfaces:**
@@ -1537,7 +2373,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.sessions
 - [ ] **Step 3: Write the minimal implementation**
 
 ```python
-# django_signet/sessions/stores/cache.py
+# src/django_signet/sessions/stores/cache.py
 from __future__ import annotations
 
 import uuid
@@ -1682,7 +2518,7 @@ EOF
 - [ ] **Step 6: Commit**
 
 ```bash
-git add django_signet/sessions/stores/cache.py tests/sessions/test_cache_store.py docs/stores.md
+git add src/django_signet/sessions/stores/cache.py tests/sessions/test_cache_store.py docs/stores.md
 git commit -m "feat: cache-backed token store with CAS atomicity and denylist mode"
 ```
 
@@ -1693,7 +2529,7 @@ git commit -m "feat: cache-backed token store with CAS atomicity and denylist mo
 This is the security-critical path. Review it more carefully than any other task.
 
 **Files:**
-- Create: `django_signet/sessions/rotation.py`
+- Create: `src/django_signet/sessions/rotation.py`
 - Test: `tests/sessions/test_rotation.py`
 
 **Interfaces:**
@@ -1858,7 +2694,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.sessions
 - [ ] **Step 3: Write the minimal implementation**
 
 ```python
-# django_signet/sessions/rotation.py
+# src/django_signet/sessions/rotation.py
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -2051,7 +2887,7 @@ Expected: all previous tests still pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add django_signet/sessions/rotation.py tests/sessions/test_rotation.py
+git add src/django_signet/sessions/rotation.py tests/sessions/test_rotation.py
 git commit -m "feat: rotation policy with reuse detection and idempotent grace window"
 ```
 
@@ -2060,7 +2896,7 @@ git commit -m "feat: rotation policy with reuse detection and idempotent grace w
 ## Task 8: Transport layer
 
 **Files:**
-- Create: `django_signet/transport/__init__.py`, `django_signet/transport/base.py`, `django_signet/transport/cookie.py`, `django_signet/transport/header.py`
+- Create: `src/django_signet/transport/__init__.py`, `src/django_signet/transport/base.py`, `src/django_signet/transport/cookie.py`, `src/django_signet/transport/header.py`
 - Test: `tests/transport/test_cookie.py`, `tests/transport/test_header.py`
 
 **Interfaces:**
@@ -2210,11 +3046,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.transpor
 - [ ] **Step 3: Write the minimal implementation**
 
 ```python
-# django_signet/transport/__init__.py
+# src/django_signet/transport/__init__.py
 ```
 
 ```python
-# django_signet/transport/base.py
+# src/django_signet/transport/base.py
 from __future__ import annotations
 
 import abc
@@ -2247,7 +3083,7 @@ class Transport(abc.ABC):
 ```
 
 ```python
-# django_signet/transport/cookie.py
+# src/django_signet/transport/cookie.py
 from __future__ import annotations
 
 from typing import Any
@@ -2380,7 +3216,7 @@ class CookieTransport(Transport):
 ```
 
 ```python
-# django_signet/transport/header.py
+# src/django_signet/transport/header.py
 from __future__ import annotations
 
 from typing import Any
@@ -2472,7 +3308,7 @@ Expected: 15 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add django_signet/transport/ tests/transport/
+git add src/django_signet/transport/ tests/transport/
 git commit -m "feat: cookie, header and hybrid transports with correct cookie prefixes"
 ```
 
@@ -2481,7 +3317,7 @@ git commit -m "feat: cookie, header and hybrid transports with correct cookie pr
 ## Task 9: CSRF double-submit
 
 **Files:**
-- Create: `django_signet/csrf.py`
+- Create: `src/django_signet/csrf.py`
 - Test: `tests/test_csrf.py`
 
 **Interfaces:**
@@ -2557,7 +3393,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.csrf'`
 - [ ] **Step 3: Write the minimal implementation**
 
 ```python
-# django_signet/csrf.py
+# src/django_signet/csrf.py
 from __future__ import annotations
 
 import hmac
@@ -2612,7 +3448,7 @@ Expected: 9 passed (5 parametrised cases plus 4).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add django_signet/csrf.py tests/test_csrf.py
+git add src/django_signet/csrf.py tests/test_csrf.py
 git commit -m "feat: double-submit CSRF with constant-time comparison"
 ```
 
@@ -2621,7 +3457,7 @@ git commit -m "feat: double-submit CSRF with constant-time comparison"
 ## Task 10: DRF authentication classes
 
 **Files:**
-- Create: `django_signet/authentication.py`
+- Create: `src/django_signet/authentication.py`
 - Test: `tests/test_authentication.py`
 
 **Interfaces:**
@@ -2761,7 +3597,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.authenti
 - [ ] **Step 3: Write the minimal implementation**
 
 ```python
-# django_signet/authentication.py
+# src/django_signet/authentication.py
 from __future__ import annotations
 
 from typing import Any
@@ -2885,7 +3721,7 @@ class StrictHybridJWTAuthentication(HybridJWTAuthentication):
     strict = True
 ```
 
-Note: `HybridTransport` has no `.policy` of its own, so add this property to it in `django_signet/transport/header.py` — `should_enforce_csrf` and `validate_csrf` both need it:
+Note: `HybridTransport` has no `.policy` of its own, so add this property to it in `src/django_signet/transport/header.py` — `should_enforce_csrf` and `validate_csrf` both need it:
 
 ```python
     @property
@@ -2903,7 +3739,7 @@ Expected: 11 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add django_signet/authentication.py django_signet/transport/header.py tests/test_authentication.py
+git add src/django_signet/authentication.py django_signet/transport/header.py tests/test_authentication.py
 git commit -m "feat: DRF authentication classes with strict siblings and CVE-2024-22513 guard"
 ```
 
@@ -2912,7 +3748,7 @@ git commit -m "feat: DRF authentication classes with strict siblings and CVE-202
 ## Task 11: Serializers, views and URLs
 
 **Files:**
-- Create: `django_signet/serializers.py`, `django_signet/views.py`, `django_signet/urls.py`
+- Create: `src/django_signet/serializers.py`, `src/django_signet/views.py`, `src/django_signet/urls.py`
 - Modify: `tests/urls.py`
 - Test: `tests/test_views.py`
 
@@ -3051,7 +3887,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.urls'`
 - [ ] **Step 4: Write the minimal implementation**
 
 ```python
-# django_signet/serializers.py
+# src/django_signet/serializers.py
 from __future__ import annotations
 
 from typing import Any
@@ -3088,7 +3924,7 @@ class TokenObtainSerializer(serializers.Serializer):
 ```
 
 ```python
-# django_signet/views.py
+# src/django_signet/views.py
 from __future__ import annotations
 
 from typing import Any
@@ -3229,7 +4065,7 @@ class LogoutAllView(SignetViewMixin, APIView):
 ```
 
 ```python
-# django_signet/urls.py
+# src/django_signet/urls.py
 from django.urls import path
 
 from django_signet.views import (
@@ -3264,7 +4100,7 @@ Expected: everything passes.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add django_signet/serializers.py django_signet/views.py django_signet/urls.py tests/
+git add src/django_signet/serializers.py django_signet/views.py django_signet/urls.py tests/
 git commit -m "feat: login, refresh, verify and logout views with cookie encapsulation"
 ```
 
@@ -3273,8 +4109,8 @@ git commit -m "feat: login, refresh, verify and logout views with cookie encapsu
 ## Task 12: System checks and password-change revocation
 
 **Files:**
-- Create: `django_signet/checks.py`, `django_signet/revocation.py`
-- Modify: `django_signet/apps.py`
+- Create: `src/django_signet/checks.py`, `src/django_signet/revocation.py`
+- Modify: `src/django_signet/apps.py`
 - Test: `tests/test_checks.py`, `tests/test_revocation.py`
 
 **Interfaces:**
@@ -3353,7 +4189,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'django_signet.checks'`
 - [ ] **Step 3: Write the minimal implementation**
 
 ```python
-# django_signet/checks.py
+# src/django_signet/checks.py
 from __future__ import annotations
 
 from typing import Any
@@ -3444,7 +4280,7 @@ ALL_CHECKS = (
 ```
 
 ```python
-# django_signet/revocation.py
+# src/django_signet/revocation.py
 from __future__ import annotations
 
 from typing import Any
@@ -3476,7 +4312,7 @@ def revoke_on_password_change(sender: Any, instance: Any, **kwargs: Any) -> None
 ```
 
 ```python
-# django_signet/apps.py
+# src/django_signet/apps.py
 from django.apps import AppConfig
 from django.core.checks import register
 
@@ -3517,7 +4353,7 @@ Expected: "System check identified no issues".
 - [ ] **Step 6: Commit**
 
 ```bash
-git add django_signet/checks.py django_signet/revocation.py django_signet/apps.py tests/
+git add src/django_signet/checks.py django_signet/revocation.py django_signet/apps.py tests/
 git commit -m "feat: system checks and password-change session revocation"
 ```
 
@@ -3810,83 +4646,14 @@ git commit -m "test: adversarial security suite covering forgery and session att
 
 ---
 
-## Task 14: Packaging, CI, documentation and release
+## Task 14: Documentation, benchmarks and release
 
 **Files:**
-- Create: `noxfile.py`, `.github/workflows/ci.yml`, `README.md`, `LICENSE`, `CHANGELOG.md`, `docs/migrating-from-simplejwt.md`, `benchmarks/bench_verify.py`
-- Modify: `pyproject.toml`
+- Create: `README.md`, `CHANGELOG.md`, `docs/migrating-from-simplejwt.md`, `benchmarks/bench_verify.py`
 
-- [ ] **Step 1: Write the nox matrix**
+Tooling, CI and governance files were created in Task 0; this task is documentation, benchmarks and the release gate.
 
-```python
-# noxfile.py
-import nox
-
-PYTHONS = ["3.12", "3.13", "3.14"]
-DJANGOS = ["5.2", "6.0", "6.1"]
-
-
-@nox.session(python=PYTHONS)
-@nox.parametrize("django", DJANGOS)
-def tests(session, django):
-    # Django 5.2 does not support Python 3.14.
-    if django == "5.2" and session.python == "3.14":
-        session.skip("Django 5.2 does not support Python 3.14")
-    session.install(f"django~={django}.0", "djangorestframework>=3.16",
-                    "pyjwt>=2.10", "pytest", "pytest-django", "pytest-cov")
-    session.install("-e", ".")
-    session.run("pytest", "-q")
-
-
-@nox.session(python="3.13")
-def typecheck(session):
-    session.install("mypy", "django-stubs", "djangorestframework-stubs", "-e", ".")
-    session.run("mypy", "django_signet")
-```
-
-- [ ] **Step 2: Write the CI workflow**
-
-```yaml
-# .github/workflows/ci.yml
-name: CI
-
-on:
-  push: { branches: [main] }
-  pull_request:
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.12", "3.13", "3.14"]
-        django: ["5.2", "6.0", "6.1"]
-        exclude:
-          - python: "3.14"
-            django: "5.2"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - run: pip install "django~=${{ matrix.django }}.0" djangorestframework
-              pyjwt pytest pytest-django pytest-cov
-      - run: pip install -e .
-      - run: pytest -q --cov=django_signet
-
-  security-gate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.13" }
-      - run: pip install -e ".[rsa]" pytest pytest-django
-      - name: Adversarial suite must pass
-        run: pytest tests/security/ -v
-```
-
-- [ ] **Step 3: Write the README**
+- [ ] **Step 1: Write the README**
 
 ```bash
 cat > README.md <<'EOF'
@@ -3983,7 +4750,7 @@ MIT.
 EOF
 ```
 
-- [ ] **Step 4: Write the migration guide and changelog**
+- [ ] **Step 2: Write the migration guide and changelog**
 
 ```bash
 cat > docs/migrating-from-simplejwt.md <<'EOF'
@@ -4039,7 +4806,7 @@ First release.
 EOF
 ```
 
-- [ ] **Step 5: Add the benchmark harness**
+- [ ] **Step 3: Add the benchmark harness**
 
 ```python
 # benchmarks/bench_verify.py
@@ -4094,14 +4861,9 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 6: Add the licence and verify the build**
+- [ ] **Step 4: Verify the build**
 
 ```bash
-curl -sL https://raw.githubusercontent.com/licenses/license-templates/master/templates/mit.txt \
-  -o LICENSE || true
-# If the download fails, write the standard MIT text manually with
-# year 2026 and the copyright holder's name.
-
 .venv/bin/pip install build twine
 .venv/bin/python -m build
 .venv/bin/twine check dist/*
@@ -4109,7 +4871,7 @@ curl -sL https://raw.githubusercontent.com/licenses/license-templates/master/tem
 
 Expected: `twine check` reports PASSED for both the wheel and the sdist.
 
-- [ ] **Step 7: Verify the package installs clean in a fresh environment**
+- [ ] **Step 5: Verify the package installs clean in a fresh environment**
 
 ```bash
 python3 -m venv /tmp/signet-smoke
@@ -4119,14 +4881,14 @@ python3 -m venv /tmp/signet-smoke
 
 Expected: prints `0.1.0` with no missing dependency.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add noxfile.py .github/ README.md LICENSE CHANGELOG.md docs/ benchmarks/ pyproject.toml
-git commit -m "chore: packaging, CI matrix, documentation and benchmark harness"
+git add README.md CHANGELOG.md docs/ benchmarks/
+git commit -m "docs: README, migration guide, changelog and benchmark harness"
 ```
 
-- [ ] **Step 9: Publish — REQUIRES EXPLICIT USER APPROVAL**
+- [ ] **Step 7: Publish — REQUIRES EXPLICIT USER APPROVAL**
 
 **Do not run this step autonomously.** Publishing to PyPI is irreversible:
 a version number can never be reused, and the package becomes public
@@ -4145,7 +4907,7 @@ token is ever stored locally.
 
 ## Self-Review
 
-**Spec coverage.** Every section of the spec maps to a task: §4 architecture →
+**Spec coverage.** Task 0 covers the repository shell, tooling and open-source governance — added after the plan's first draft, which specified a flat layout, no linter, and treated GitHub as an afterthought. Every section of the spec maps to a task: §4 architecture →
 Tasks 1–12; §5 state model → Tasks 7, 10; §6 data model → Task 4; §7 store port
 → Tasks 5–6; §8 rotation → Task 7; §9 transport → Task 8; §10 CSRF → Task 9;
 §11 DRF surface → Tasks 10–11; §12 error handling → Tasks 10–11 plus the
