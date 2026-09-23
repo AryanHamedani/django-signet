@@ -60,6 +60,13 @@ design flaw demands it, and every such change is listed here.
   itself (Django's failure logging raises on a callable-instance receiver)
   is logged and ignored as well. Decisions belong in hooks
   (`on_reuse_detected`, `on_authentication_failed`), which are unchanged.
+- **Security:** `RotationPolicy.on_reuse_detected` can no longer undo a
+  reuse burn. The hook runs after the burn is written, but under
+  `ATOMIC_REQUESTS` before it is committed, so a hook that raised rolled
+  the burn back: the request answered 500 and the replayed family stayed
+  live. Its exceptions are now logged at `error` on
+  `django_signet.sessions.rotation` and ignored, and the replay is refused
+  with `TokenReused` as usual.
 - System check `signet.E010` now reports *any* exception raised while
   building the configured store - a store constructor rejecting its
   `STORE_OPTIONS` with `ValueError`, say - naming the exception's type and

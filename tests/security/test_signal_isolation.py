@@ -296,13 +296,8 @@ def test_a_receiver_that_breaks_the_dispatch_does_not_undo_a_logout(
     assert response.status_code == 200
 
 
-class _VetoError(Exception):
-    """What a hook raises to change the outcome - which hooks may do."""
-
-
 def test_the_reuse_hook_still_runs_when_a_receiver_raises(account):
-    """Hooks are decision points and are not routed through the helper: a
-    raising ``token_reuse_detected`` receiver used to skip the hook."""
+    """A raising ``token_reuse_detected`` receiver used to skip the hook."""
     seen = []
 
     class Watching(RotationPolicy):
@@ -318,20 +313,3 @@ def test_the_reuse_hook_still_runs_when_a_receiver_raises(account):
         policy.rotate(first.refresh.value)
 
     assert seen == [first.family.id]
-
-
-def test_a_raising_reuse_hook_still_changes_the_outcome(account):
-    """The other half of the contract: unlike a receiver, a hook that
-    raises is not swallowed."""
-
-    class Vetoing(RotationPolicy):
-        grace_cache = None
-
-        def on_reuse_detected(self, family):
-            raise _VetoError
-
-    policy = Vetoing()
-    first = policy.open_session(account)
-    policy.rotate(first.refresh.value)
-    with pytest.raises(_VetoError):
-        policy.rotate(first.refresh.value)
