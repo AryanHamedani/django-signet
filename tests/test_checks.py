@@ -4,6 +4,7 @@ from django_signet.checks import (
     check_cookie_prefix,
     check_cookie_security,
     check_grace_cache,
+    check_setting_types,
     check_signet_setting_shape,
     check_signing_key,
 )
@@ -112,9 +113,15 @@ def test_malformed_signet_does_not_crash_the_other_checks():
     assert check_cookie_prefix(None) == []
     assert check_grace_cache(None) == []
     assert check_signing_key(None) == []
+    assert check_setting_types(None) == []
 
 
 # ----------------------------------------------- crash-proofing: wrong types
+#
+# These confirm the *dereferencing* checks survive a wrong-typed setting
+# (fall back to a safe default, never raise) - see the signet.E006 section
+# below for the check that reports the wrong type as a real problem instead
+# of silently tolerating it.
 
 
 @override_settings(SIGNET={"ALGORITHM": 256})
@@ -131,6 +138,72 @@ def test_non_string_refresh_name_does_not_crash_and_is_quiet():
 def test_unhashable_grace_cache_warns_instead_of_crashing():
     ids = [w.id for w in check_grace_cache(None)]
     assert "signet.W003" in ids
+
+
+# --------------------------------------------- signet.E006: wrong-typed value
+
+
+@override_settings(SIGNET={"ALGORITHM": 123})
+def test_non_string_algorithm_is_an_error():
+    ids = [e.id for e in check_setting_types(None)]
+    assert "signet.E006" in ids
+
+
+@override_settings(SIGNET={"ALGORITHM": "HS256"})
+def test_string_algorithm_is_quiet():
+    assert check_setting_types(None) == []
+
+
+def test_absent_algorithm_is_quiet():
+    assert check_setting_types(None) == []
+
+
+@override_settings(SIGNET={"COOKIE_REFRESH_NAME": 999})
+def test_non_string_refresh_name_is_an_error():
+    ids = [e.id for e in check_setting_types(None)]
+    assert "signet.E006" in ids
+
+
+@override_settings(SIGNET={"COOKIE_REFRESH_NAME": None})
+def test_none_refresh_name_is_quiet():
+    """None is the legitimate "derive it from COOKIE_PREFIX" sentinel, not
+    a wrong type - it must not be flagged."""
+    assert check_setting_types(None) == []
+
+
+@override_settings(SIGNET={"COOKIE_REFRESH_NAME": "signet-refresh"})
+def test_string_refresh_name_is_quiet():
+    assert check_setting_types(None) == []
+
+
+@override_settings(SIGNET={"COOKIE_ACCESS_NAME": 999})
+def test_non_string_access_name_is_an_error():
+    ids = [e.id for e in check_setting_types(None)]
+    assert "signet.E006" in ids
+
+
+@override_settings(SIGNET={"COOKIE_ACCESS_NAME": None})
+def test_none_access_name_is_quiet():
+    assert check_setting_types(None) == []
+
+
+@override_settings(SIGNET={"COOKIE_CSRF_NAME": 999})
+def test_non_string_csrf_name_is_an_error():
+    ids = [e.id for e in check_setting_types(None)]
+    assert "signet.E006" in ids
+
+
+@override_settings(SIGNET={"COOKIE_CSRF_NAME": None})
+def test_none_csrf_name_is_quiet():
+    assert check_setting_types(None) == []
+
+
+@override_settings(SIGNET={"ALGORITHM": 123, "COOKIE_REFRESH_NAME": 999})
+def test_multiple_wrong_typed_settings_each_reported():
+    """Both problems are reported - one E006 finding doesn't swallow the
+    other, unlike the single-message shape check for signet.E005."""
+    ids = [e.id for e in check_setting_types(None)]
+    assert ids == ["signet.E006", "signet.E006"]
 
 
 # ------------------------------------------- signet.E002: path AND domain

@@ -12,9 +12,18 @@ the outcome has to be a reported message, not an unhandled traceback from
 exists to prevent, one level up. ``_signet()`` degrades any non-dict
 ``SIGNET`` to ``{}`` so every check below it is quiet rather than crashing;
 ``check_signet_setting_shape`` is the one check that names the real
-problem. ``_as_str()`` gives the same treatment to individual fields: a
-field present with the wrong type is treated as absent rather than reaching
-a string API and raising.
+problem. ``_as_str()`` gives the same treatment to individual fields inside
+the checks that dereference them: a field present with the wrong type is
+treated as absent rather than reaching a string API and raising.
+
+Surviving is not the same as passing, though: a check that silently falls
+back to a safe default for a wrong-typed setting produces a clean
+``manage.py check`` for a configuration that cannot actually work (an
+``ALGORITHM`` that is not a string, a cookie name that is not a string)
+and fails only later, at request time, with nothing at startup having said
+so. ``check_setting_types`` is the one check that reports *that* - crash
+avoidance and misconfiguration reporting are two different jobs, done by
+two different functions.
 """
 
 from __future__ import annotations
@@ -60,6 +69,56 @@ def check_signet_setting_shape(app_configs: Any, **kwargs: Any) -> list[CheckMes
             id="signet.E005",
         )
     ]
+
+
+# Settings every other check dereferences as a string: a wrong type here
+# either crashes the dereferencing check (guarded elsewhere by _as_str) or -
+# worse - is silently tolerated and reaches an API that fails later, at
+# request time, with no system check ever having said a word. ALGORITHM has
+# no legitimate non-str value; the three cookie-name settings legitimately
+# accept None ("derive the name from COOKIE_PREFIX").
+_REQUIRES_STR: tuple[str, ...] = ("ALGORITHM",)
+_REQUIRES_STR_OR_NONE: tuple[str, ...] = (
+    "COOKIE_REFRESH_NAME",
+    "COOKIE_ACCESS_NAME",
+    "COOKIE_CSRF_NAME",
+)
+
+
+def _wrong_type_error(key: str, value: Any, expected: str) -> CheckMessage:
+    return Error(
+        f"SIGNET[{key!r}] must be {expected}, got {type(value).__name__}.",
+        hint=f"Fix the type of SIGNET[{key!r}] in your project settings. "
+        "A wrong-typed value here does not crash manage.py check (the "
+        "checks that read it fall back safely), but it does reach live "
+        "code at request time and fail there instead - silently, as far "
+        "as this check suite is concerned.",
+        id="signet.E006",
+    )
+
+
+def check_setting_types(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
+    """Reports, rather than tolerates, a present-but-wrong-typed setting.
+
+    The functions below (``check_cookie_prefix``, ``check_signing_key``)
+    already guard themselves against this with ``_as_str()`` so *they*
+    never raise - but a silent fallback to a default is not the same as a
+    passing configuration. ``ALGORITHM=123`` or
+    ``COOKIE_REFRESH_NAME=999`` both pass every other check cleanly and
+    both fail at request time (``get_backend()`` rejects a non-string
+    algorithm; a non-string cookie name can never be set on a response).
+    This is the check that says so at startup instead.
+    """
+    cfg = _signet()
+    errors: list[CheckMessage] = []
+    for key in _REQUIRES_STR:
+        if key in cfg and not isinstance(cfg[key], str):
+            errors.append(_wrong_type_error(key, cfg[key], "a str"))
+    for key in _REQUIRES_STR_OR_NONE:
+        value = cfg.get(key)
+        if key in cfg and value is not None and not isinstance(value, str):
+            errors.append(_wrong_type_error(key, value, "a str or None"))
+    return errors
 
 
 def check_cookie_security(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
@@ -161,6 +220,7 @@ def check_signing_key(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
 
 ALL_CHECKS = (
     check_signet_setting_shape,
+    check_setting_types,
     check_cookie_security,
     check_cookie_prefix,
     check_grace_cache,
