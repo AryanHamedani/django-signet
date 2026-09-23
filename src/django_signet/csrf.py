@@ -37,6 +37,13 @@ def issue_csrf(response: Any, policy: CookiePolicy, token: str | None = None) ->
     drops the cookie - no exception, no log line - and every legitimate
     unsafe request then fails validate_csrf(), which looks like a bug in
     the check itself rather than in how the cookie was issued.
+
+    ``token``, if supplied, is trusted as-is and written straight into the
+    cookie: it must come from this library (e.g. a fixed value in a test,
+    or a value already vetted by the caller), never from client input. A
+    caller that let the client choose its own CSRF token would let an
+    attacker set matching cookie and header values from their own page,
+    defeating the entire double-submit scheme.
     """
     token = token or new_csrf_token()
     response.set_cookie(
