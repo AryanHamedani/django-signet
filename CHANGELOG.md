@@ -72,7 +72,8 @@ design flaw demands it, and every such change is listed here.
   contract: `__Host-` requires `Secure`, `Path=/` and no `Domain`;
   `__Secure-` requires `Secure`. It now also catches a prefixed name under
   `COOKIE_SECURE=False`. Each violated requirement is its own message,
-  naming the setting and the cookie. A derived (`None`) name is never
+  naming the setting and the cookie. Prefixes are matched
+  case-insensitively, as browsers do. A derived (`None`) name is never
   flagged.
 - System check `signet.E004` no longer rejects a verify-only resource
   server. It is now raised only for an RS algorithm with no

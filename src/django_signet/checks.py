@@ -189,10 +189,12 @@ _COOKIE_NAME_SETTINGS: tuple[tuple[str, str | None], ...] = (
 def _prefix_violations(name: str, *, secure: bool, path: str, domain: Any) -> list[str]:
     """The requirements of ``name``'s browser-enforced prefix that a cookie
     with these attributes breaks, each as a phrase naming the requirement
-    and what the settings do instead."""
-    if name.startswith("__Host-"):
+    and what the settings do instead. Browsers match the prefixes
+    case-insensitively, so ``__host-`` is held to ``__Host-``'s rules."""
+    lowered = name.lower()
+    if lowered.startswith("__host-"):
         prefix = "__Host-"
-    elif name.startswith("__Secure-"):
+    elif lowered.startswith("__secure-"):
         prefix = "__Secure-"
     else:
         return []
