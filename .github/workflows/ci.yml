@@ -51,8 +51,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-      - run: pip install "django~=${{ matrix.django }}.0" djangorestframework pyjwt
-              pytest pytest-django pytest-cov
+      - run: >-
+          pip install "django~=${{ matrix.django }}.0" djangorestframework pyjwt
+          pytest pytest-django pytest-cov
       - run: pip install -e ".[rsa]"
       - run: pytest -q --cov --cov-report=xml
       - uses: codecov/codecov-action@v5
