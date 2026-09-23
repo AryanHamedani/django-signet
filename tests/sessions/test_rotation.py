@@ -179,3 +179,137 @@ def test_replay_just_past_the_grace_window_is_rejected(user):
         policy.rotate(first.refresh.value)
     first.family.refresh_from_db()
     assert first.family.is_live is False
+
+
+class _RecordingCache:
+    """Stands in for ``caches[alias]``: records what would be sent to
+    ``set()`` instead of applying any backend-specific semantics to it.
+    ``LocMemCache`` special-cases ``timeout=0`` as already-expired, which
+    makes a real cache backend the wrong tool for pinning a ``<=`` versus
+    ``<`` boundary bug - any such backend would make the two
+    implementations behave identically from the outside."""
+
+    def __init__(self):
+        self.set_calls = []
+
+    def set(self, key, value, timeout):
+        self.set_calls.append(timeout)
+
+    def get(self, key):
+        return None
+
+
+def test_a_non_positive_grace_window_never_touches_the_cache(user, monkeypatch):
+    """Direct proof of the ``_cache()`` boundary, independent of any cache
+    backend's own timeout=0 handling: a ``<=`` guard weakened to ``<``
+    would still let ``grace_window == timedelta(0)`` reach ``caches[alias]``
+    and call ``.set()`` - this fails in that case and passes against the
+    shipped ``<=`` guard."""
+
+    class ZeroGrace(RotationPolicy):
+        grace_window = timedelta(seconds=0)
+        grace_cache = "spy"
+
+    spy = _RecordingCache()
+    monkeypatch.setattr("django_signet.sessions.rotation.caches", {"spy": spy})
+
+    policy = ZeroGrace()
+    first = policy.open_session(user)
+    policy.rotate(first.refresh.value)
+
+    assert spy.set_calls == []
+
+
+class _RaisingCache:
+    """A cache backend that is present but unreachable - a dropped
+    connection or a timeout, not a missing alias."""
+
+    def set(self, key, value, timeout):
+        raise ConnectionError("cache backend unreachable")
+
+    def get(self, key):
+        raise ConnectionError("cache backend unreachable")
+
+
+def test_a_cache_write_failure_does_not_strand_the_rotated_pair(user, monkeypatch):
+    """``store.consume()`` already burned the old token and ``store.issue()``
+    already persisted the successor by the time the grace cache is written.
+    A transient cache outage on that write must not turn an already-
+    completed rotation into an unhandled exception - only the idempotency
+    guarantee for a subsequent replay is allowed to be lost."""
+    monkeypatch.setattr(
+        "django_signet.sessions.rotation.caches", {"default": _RaisingCache()}
+    )
+    policy = RotationPolicy()
+    first = policy.open_session(user)
+
+    second = policy.rotate(first.refresh.value)  # must not raise
+
+    assert second.replayed is False
+    assert second.refresh.value != first.refresh.value
+    old = IssuedToken.objects.get(digest=token_digest(first.refresh.value))
+    assert old.consumed_at is not None
+
+
+def test_a_cache_read_failure_degrades_to_treating_the_replay_as_reuse(
+    user, monkeypatch
+):
+    """The read-side mirror of the write-failure case: once the cache is
+    unreachable, a replay it can no longer vouch for must be treated as
+    reuse, exactly like a genuine grace-window miss - never silently
+    treated as benign, and never allowed to propagate the cache's own
+    exception past ``rotate()``."""
+    policy = RotationPolicy()
+    first = policy.open_session(user)
+    policy.rotate(first.refresh.value)  # writes a real grace-cache entry
+
+    monkeypatch.setattr(
+        "django_signet.sessions.rotation.caches", {"default": _RaisingCache()}
+    )
+    with pytest.raises(TokenReused):
+        policy.rotate(first.refresh.value)
+    first.family.refresh_from_db()
+    assert first.family.is_live is False
+
+
+def test_a_dummy_cache_alias_makes_every_replay_look_like_reuse(user):
+    """``DummyCache`` accepts writes and silently discards them, so it
+    passes ``_cache()``'s checks yet never actually holds an entry - the
+    grace window becomes a permanent no-op and every benign double-tab
+    replay burns the family exactly like theft would. Still the safe
+    direction, not a hole - but it is a footgun worth pinning down, since
+    it produces no error, only logged-out users."""
+
+    class DummyGrace(RotationPolicy):
+        grace_cache = "dummy"
+
+    policy = DummyGrace()
+    first = policy.open_session(user)
+    policy.rotate(first.refresh.value)
+    with pytest.raises(TokenReused):
+        policy.rotate(first.refresh.value)
+    first.family.refresh_from_db()
+    assert first.family.is_live is False
+
+
+class _ExplodingAccessToken(AccessToken):
+    def mint(self, *args, **kwargs):
+        raise RuntimeError("signing backend exploded")
+
+
+def test_a_mint_failure_leaves_no_orphan_family_or_token(user):
+    """If minting the access token fails partway through ``_mint_into()``,
+    the family (for ``open_session()``) and the just-issued refresh token
+    must roll back together rather than surviving as rows nothing can ever
+    redeem - the raw refresh value that would redeem them was never
+    returned to any caller."""
+
+    class Exploding(RotationPolicy):
+        access_token_class = _ExplodingAccessToken
+
+    policy = Exploding()
+    with pytest.raises(RuntimeError):
+        policy.open_session(user)
+
+    assert TokenFamily.objects.count() == 0
+    assert IssuedToken.objects.count() == 0

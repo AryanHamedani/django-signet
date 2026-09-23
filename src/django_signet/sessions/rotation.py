@@ -20,17 +20,26 @@ fall back to strict RFC 9700 behaviour, where *any* replay of a consumed
 refresh token burns its family. A missing or misconfigured cache alias
 degrades the same way: silently disabling reuse detection would be the
 worst possible failure mode for this library, so anything that stops the
-grace cache from being reachable must make rotation *stricter*, never more
-permissive.
+grace cache from being reachable - an unknown alias, or the alias raising
+once it's actually asked to read or write - must make rotation *stricter*,
+never more permissive. The one exception worth knowing about rather than
+hitting by surprise: pointing ``GRACE_CACHE`` at Django's own
+``DummyCache`` degrades the same way (it accepts writes and silently
+discards them), which turns the grace window into a permanent no-op -
+every benign double-tab replay burns the family exactly like theft would.
+That is still the safe direction, not a hole, but it produces no error and
+only confused, logged-out users.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
 from django.core.cache import InvalidCacheBackendError, caches
+from django.db import transaction
 from django.utils import timezone
 
 from django_signet.conf import setting
@@ -48,6 +57,8 @@ from django_signet.signals import token_reuse_detected
 from django_signet.tokens.access import AccessToken
 from django_signet.tokens.base import MintedToken
 from django_signet.tokens.refresh import RefreshToken
+
+logger = logging.getLogger(__name__)
 
 _GRACE_KEY = "signet:grace:{}"
 
@@ -111,10 +122,14 @@ class RotationPolicy:
         live without ever consulting a refresh token.
         """
         expires_at = timezone.now() + self.refresh_token_class().lifetime
-        family = self.store.open_family(
-            user, expires_at, user_agent=user_agent, ip_address=ip_address
-        )
-        return self._mint_into(family, subject=str(user.pk), extra=extra)
+        # One transaction: a mint failure between creating the family and
+        # issuing its first token must not leave a family row with no
+        # tokens ever pointing at it.
+        with transaction.atomic():
+            family = self.store.open_family(
+                user, expires_at, user_agent=user_agent, ip_address=ip_address
+            )
+            return self._mint_into(family, subject=str(user.pk), extra=extra)
 
     def rotate(
         self, raw_refresh: str, *, extra: dict[str, Any] | None = None
@@ -124,6 +139,14 @@ class RotationPolicy:
         Verification happens before the store is ever touched: an
         unauthenticated digest lookup would be an oracle for guessing
         live tokens.
+
+        ``extra`` is merged into both minted tokens' claims verbatim (see
+        :func:`django_signet.tokens.claims.build_claims`) and is
+        indistinguishable, once signed, from a claim the library itself
+        issued. It must be derived from trusted server-side state,
+        re-evaluated at rotation time - never forwarded from the request
+        body. A caller that lets client-controlled JSON reach this
+        parameter lets the client forge its own claims.
         """
         claims = self.refresh_token_class().verify(raw_refresh)
         digest = token_digest(raw_refresh)
@@ -182,10 +205,16 @@ class RotationPolicy:
         refresh = self.refresh_token_class().mint(
             subject, family_id=family_id, extra=extra
         )
-        self.store.issue(family, token_digest(refresh.value), refresh.expires_at)
-        access = self.access_token_class().mint(
-            subject, family_id=family_id, extra=extra
-        )
+        # Issuing the successor and minting the access token as one unit:
+        # if the access mint fails (e.g. a misconfigured signing backend),
+        # the just-persisted IssuedToken row must not survive as an orphan
+        # nobody will ever present, since the raw refresh value that would
+        # redeem it was never returned to any caller.
+        with transaction.atomic():
+            self.store.issue(family, token_digest(refresh.value), refresh.expires_at)
+            access = self.access_token_class().mint(
+                subject, family_id=family_id, extra=extra
+            )
         return SessionPair(access=access, refresh=refresh, family=family)
 
     def _burn(self, family: Any) -> None:
@@ -221,20 +250,46 @@ class RotationPolicy:
         cache = self._cache()
         if cache is None:
             return
-        # The pair itself, not a hand-picked subset of its fields: a
-        # replayed caller must get back something indistinguishable from
-        # what the original caller received, claims included.
-        cache.set(
-            _GRACE_KEY.format(digest),
-            (pair.access, pair.refresh),
-            int(self.grace_window.total_seconds()),
-        )
+        try:
+            # The pair itself, not a hand-picked subset of its fields: a
+            # replayed caller must get back something indistinguishable
+            # from what the original caller received, claims included.
+            cache.set(
+                _GRACE_KEY.format(digest),
+                (pair.access, pair.refresh),
+                int(self.grace_window.total_seconds()),
+            )
+        except Exception:
+            # store.consume() already burned the old token and
+            # store.issue() already persisted `pair`'s successor before
+            # this call runs - the rotation itself has already succeeded.
+            # A cache backend that is merely unreachable (a timeout, a
+            # dropped connection) must not turn a completed rotation into
+            # an unhandled exception the client never gets a response
+            # for. The only thing lost is the idempotency guarantee for a
+            # subsequent replay during this window, not the rotation.
+            logger.warning(
+                "signet: grace-window cache write failed; a benign "
+                "replay during this window will now be treated as reuse",
+                exc_info=True,
+            )
 
     def _grace_get(self, digest: str, family: Any) -> SessionPair | None:
         cache = self._cache()
         if cache is None:
             return None
-        entry = cache.get(_GRACE_KEY.format(digest))
+        try:
+            entry = cache.get(_GRACE_KEY.format(digest))
+        except Exception:
+            # Same failure mode as _grace_put, the opposite direction: an
+            # unreachable cache on read must degrade to strict - treat
+            # this replay as reuse - never raise past the caller and
+            # never silently treat it as benign.
+            logger.warning(
+                "signet: grace-window cache read failed; treating this replay as reuse",
+                exc_info=True,
+            )
+            return None
         if entry is None:
             return None
         access, refresh = entry

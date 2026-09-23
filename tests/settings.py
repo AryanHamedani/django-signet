@@ -7,6 +7,11 @@ INSTALLED_APPS = [
     "django_signet",
 ]
 DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
-CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+CACHES = {
+    "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+    # Used by tests/sessions/test_rotation.py to pin the documented
+    # DummyCache footgun: it accepts writes and silently discards them.
+    "dummy": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"},
+}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 ROOT_URLCONF = "tests.urls"
