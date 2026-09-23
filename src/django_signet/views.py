@@ -35,6 +35,10 @@ class SignetViewMixin:
 
     transport: Transport = CookieTransport()
     rotation = RotationPolicy()
+    #: Whether this request proved it came from our own origin - see
+    #: :meth:`clear_cookies`. Per request: Django builds a fresh view
+    #: instance for each one, so this never leaks between requests.
+    origin_proven: bool = False
 
     def get_claims(self, user: Any) -> dict[str, Any]:
         """Extra claims to embed in both tokens. Reserved claims are ignored.
@@ -74,8 +78,26 @@ class SignetViewMixin:
         response = Response(
             {"detail": GENERIC_FAILURE}, status=status.HTTP_401_UNAUTHORIZED
         )
-        self.transport.clear(response)
+        self.clear_cookies(response)
         return response
+
+    def clear_cookies(self, response: Any) -> None:
+        """The one place a response deletes cookies, and the one rule for
+        when: only once the request proved it came from our own origin.
+
+        Under ``SameSite=Lax`` a cross-site top-level form POST carries
+        none of the victim's cookies, but the browser still honours the
+        ``Set-Cookie`` deletions in the response - so clearing on a
+        request that presented nothing would let one forged POST log
+        anyone out. :meth:`RefreshCredentialView.read_refresh_credential`
+        sets ``origin_proven`` once a refresh credential is presented and,
+        if it arrived ambiently, has passed the CSRF check; a header
+        credential is proof in itself, since a cross-site page cannot set
+        one. That keeps the dead-session loop-breaker - an invalid
+        credential our own page sent is cleared - and nothing else.
+        """
+        if self.origin_proven:
+            self.transport.clear(response)
 
     def csrf_failure(self) -> Response:
         """A failed double-submit check, not a bad credential.
@@ -192,11 +214,12 @@ class RefreshCredentialView(SignetViewMixin, APIView):
         raw = self.transport.extract_refresh(request)
         if self.refresh_is_ambient(request):
             validate_csrf(request, csrf_policy(self.transport))
+        self.origin_proven = True
         return raw
 
     def signed_out(self, detail: str) -> Response:
         response = Response({"detail": detail})
-        self.transport.clear(response)
+        self.clear_cookies(response)
         return response
 
 
@@ -257,8 +280,10 @@ class LogoutView(RefreshCredentialView):
     """Revoke the session the refresh credential names.
 
     Idempotent: with no credential, or one that no longer verifies, there
-    is nothing to revoke - and the cookies are cleared all the same, so
-    "log out" always leaves the browser signed out.
+    is nothing to revoke and the answer is still success. Cookies are
+    cleared whenever a credential was presented (and passed CSRF), so
+    "log out" leaves the browser signed out; with none presented there is
+    nothing to clear (see ``clear_cookies``).
     """
 
     reason = RevocationReason.LOGOUT
@@ -278,9 +303,10 @@ class LogoutView(RefreshCredentialView):
 class LogoutAllView(RefreshCredentialView):
     """Revoke every session of the refresh credential's user.
 
-    Unlike logout this needs a credential from a live session (see
-    ``RotationPolicy.revoke_all``); without one it answers 401, and clears
-    the cookies either way.
+    Unlike logout this needs a refresh token that redeems (see
+    ``RotationPolicy.revoke_all``); without one it answers 401 - clearing
+    the cookies only if a credential was presented (see
+    ``clear_cookies``).
     """
 
     reason = RevocationReason.LOGOUT_ALL

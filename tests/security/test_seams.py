@@ -236,13 +236,31 @@ def test_logout_without_an_access_cookie_revokes_the_family_and_clears_cookies(
     _assert_every_cookie_cleared(response)
 
 
-def test_logout_with_nothing_to_revoke_still_clears_cookies(account):
-    """Logout is idempotent: no credential at all is not an error, and the
-    cookies are cleared regardless. A second click on "log out" must not
-    produce a 401 the client has to special-case."""
-    response = APIClient().post(reverse("django_signet:logout"))
-    assert response.status_code == 200
-    _assert_every_cookie_cleared(response)
+@pytest.mark.parametrize(
+    ("endpoint", "status"), [("refresh", 401), ("logout", 200), ("logout-all", 401)]
+)
+def test_a_cookieless_cross_site_post_deletes_no_cookies(account, endpoint, status):
+    """R4: a response deletes cookies only when the request proved it came
+    from our own origin. Under ``SameSite=Lax`` a cross-site top-level
+    form POST carries none of the victim's cookies - but the browser still
+    honours the ``Set-Cookie`` deletions in the response, so answering it
+    with clearing cookies logged anyone out with one forged request: the
+    very oracle ``csrf_failure`` refuses to be. Nothing reached us, so
+    there is nothing to clear on the victim's behalf.
+
+    Logout stays idempotent - no credential is still a 200, so a second
+    click on "log out" needs no special case - and refresh and logout-all
+    still answer 401, the status that means "go to login".
+
+    Replaces ``test_logout_with_nothing_to_revoke_still_clears_cookies``,
+    which pinned exactly the clearing this ruling removes. Red on revert
+    of the ``origin_proven`` guard in ``SignetViewMixin.clear_cookies``.
+    """
+    forged = APIClient().post(
+        reverse(f"django_signet:{endpoint}"), {"next": "/"}, format="multipart"
+    )
+    assert forged.status_code == status
+    assert not forged.cookies
 
 
 def test_logout_with_an_ambient_refresh_cookie_requires_csrf(account):

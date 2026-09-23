@@ -53,7 +53,10 @@ logout that needed it could not end a session that had sat idle - which is
 most of them. The refresh cookie is therefore scoped to the auth mount
 prefix, `COOKIE_REFRESH_PATH = "/api/auth/"` by default, so it reaches all
 three (and still isn't sent on ordinary API calls). Logout is idempotent:
-it always clears the cookies, even when there is nothing left to revoke.
+with nothing left to revoke it still answers 200. A response only deletes
+cookies when the request proved it came from your own origin - it
+presented a refresh credential and passed the CSRF check - so a cross-site
+POST, which carries none of the victim's cookies, cannot log anyone out.
 If you mount the URLs somewhere else, set `COOKIE_REFRESH_PATH` to match.
 
 Login accepts a JSON body only (`Content-Type: application/json`). A
