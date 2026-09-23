@@ -254,7 +254,9 @@ def check_token_store(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
             hint="A password change will be saved but will leave existing "
             "sessions live until they expire, and POST logout-all answers "
             "501 to a request whose refresh token verifies and passes CSRF. "
-            "Use ORMTokenStore if either matters; see docs/stores.md.",
+            "Use ORMTokenStore if either matters; see "
+            "https://django-signet.readthedocs.io/en/latest/"
+            "howto/choosing-a-store.html",
             id="signet.W007",
         ),
     ]
