@@ -51,6 +51,24 @@ def test_an_unknown_field_is_rejected():
         CookiePolicy(nonsense=True)
 
 
+def test_a_method_name_is_rejected_not_silently_bound():
+    """hasattr(type(self), "resolved_name") is True - it's a method - so a
+    validator that only checks attribute existence would let this through
+    and silently shadow the method on the instance, corrupting every later
+    call to access_name/refresh_name/csrf_name from inside this instance."""
+    with pytest.raises(TypeError):
+        CookiePolicy(resolved_name="not a method")
+
+
+def test_a_read_only_property_name_is_rejected_with_type_error():
+    """access_name is a read-only @property. hasattr(type(self),
+    "access_name") is also True, so the same overly-broad check would pass
+    validation here too - and then setattr() would raise AttributeError
+    ("can't set attribute"), not the TypeError this constructor promises."""
+    with pytest.raises(TypeError):
+        CookiePolicy(access_name="x")
+
+
 def test_setting_a_domain_drops_only_the_host_prefix():
     policy = CookiePolicy(domain="example.com")
     assert not policy.access_name.startswith("__Host-")
@@ -163,3 +181,19 @@ def test_clear_also_expires_the_csrf_cookie(transport):
     response = HttpResponse()
     transport.clear(response)
     assert response.cookies[transport.policy.csrf_name]["max-age"] == 0
+
+
+def test_clear_expires_each_cookie_at_its_own_path(transport):
+    """response.cookies is keyed by name alone, so a regression that
+    cleared the refresh cookie at "/" instead of policy.refresh_path would
+    still pass test_clear_expires_both_cookies (max-age is right) while
+    leaving the real, path-scoped refresh cookie live in the browser - the
+    clear-side twin of a mis-derived resolved_name()."""
+    response = HttpResponse()
+    transport.clear(response)
+    assert response.cookies[transport.policy.access_name]["path"] == "/"
+    assert (
+        response.cookies[transport.policy.refresh_name]["path"]
+        == transport.policy.refresh_path
+    )
+    assert response.cookies[transport.policy.csrf_name]["path"] == "/"
