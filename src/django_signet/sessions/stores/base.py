@@ -73,6 +73,14 @@ class TokenLike(Protocol):
 
 
 class Outcome(enum.Enum):
+    """Every state ``TokenStore.consume()`` can report for a digest.
+
+    ``LIVE`` is the only outcome that redeems - everything else is a
+    reason the caller must refuse the token, with ``ALREADY_CONSUMED``
+    singled out by ``RotationPolicy`` for the grace-window replay check
+    before it is treated as reuse.
+    """
+
     NOT_FOUND = "not_found"
     LIVE = "live"
     ALREADY_CONSUMED = "already_consumed"
@@ -82,6 +90,15 @@ class Outcome(enum.Enum):
 
 @dataclass(frozen=True)
 class ConsumeResult:
+    """What ``TokenStore.consume()`` returns: the outcome, and the family
+    and token it was decided against when either exists.
+
+    ``family``/``issued_token`` are ``None`` only for ``NOT_FOUND`` -
+    every other outcome names the record the decision was made about, so
+    a caller can revoke the family or report on the token without a
+    second lookup.
+    """
+
     outcome: Outcome
     family: FamilyLike | None = None
     issued_token: TokenLike | None = None
@@ -120,9 +137,9 @@ class TokenStore(abc.ABC):
         against the returned id, then calls ``issue()``."""
 
     @abc.abstractmethod
-    def issue(
-        self, family: FamilyLike, digest: str, expires_at: datetime
-    ) -> TokenLike: ...
+    def issue(self, family: FamilyLike, digest: str, expires_at: datetime) -> TokenLike:
+        """Record a newly minted refresh token's digest against
+        ``family``, so a later ``consume()`` can find and classify it."""
 
     @abc.abstractmethod
     def consume(self, digest: str) -> ConsumeResult:
@@ -134,13 +151,33 @@ class TokenStore(abc.ABC):
         """
 
     @abc.abstractmethod
-    def is_live(self, family_id: uuid.UUID) -> bool: ...
+    def is_live(self, family_id: uuid.UUID) -> bool:
+        """Whether the family is still usable: exists, unrevoked, and
+        unexpired. What a ``Strict*`` authentication class checks on every
+        request to stop a revoked session authenticating immediately,
+        rather than only once its still-valid access token expires on its
+        own.
+        """
 
     @abc.abstractmethod
-    def revoke_family(self, family_id: uuid.UUID, reason: str) -> None: ...
+    def revoke_family(self, family_id: uuid.UUID, reason: str) -> None:
+        """Revoke one session family, recording ``reason``. A no-op for a
+        family the store no longer holds (already expired or purged),
+        since there is nothing left to revoke."""
 
     @abc.abstractmethod
-    def revoke_all_for_user(self, user: Any, reason: str) -> None: ...
+    def revoke_all_for_user(self, user: Any, reason: str) -> None:
+        """Revoke every live family belonging to ``user`` - logout-all and
+        password-change revocation both go through this. An adapter that
+        cannot enumerate a user's families raises ``NotImplementedError``
+        and sets ``supports_revoke_all_for_user = False`` so system check
+        ``signet.W007`` can say so at startup.
+        """
 
     @abc.abstractmethod
-    def purge_expired(self) -> int: ...
+    def purge_expired(self) -> int:
+        """Delete every expired family (and its tokens), returning how
+        many were removed. What ``manage.py signet_purge`` calls; nothing
+        else in this library does, so a store that never runs it keeps
+        expired sessions forever.
+        """

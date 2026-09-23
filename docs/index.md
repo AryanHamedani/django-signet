@@ -11,6 +11,7 @@ Source code: <https://github.com/AryanHamedani/django-signet>
 ```{toctree}
 :maxdepth: 2
 
+reference/index
 stores
 migrating-from-simplejwt
 ```

@@ -19,8 +19,10 @@ class CookiePolicy:
     reimplemented here.
 
     Prefix rules are browser-enforced, not stylistic:
-      ``__Host-``   requires Secure, Path=/, and no Domain.
-      ``__Secure-`` requires Secure only.
+
+    - ``__Host-`` requires Secure, Path=/, and no Domain.
+    - ``__Secure-`` requires Secure only.
+
     A ``__Host-`` cookie with a non-root path is silently dropped by the
     browser - no error, the request just arrives unauthenticated - so the
     path-scoped refresh cookie must use ``__Secure-`` instead. It is
@@ -89,12 +91,18 @@ class CookiePolicy:
 
     @property
     def access_name(self) -> str:
+        """The access cookie's name: ``COOKIE_ACCESS_NAME`` verbatim if
+        set, else ``prefix-access`` with the ``__Host-``/``__Secure-``
+        prefix applied. Root-scoped, so ``__Host-`` is available to it."""
         return self.explicit_access_name or self.resolved_name(
             f"{self.prefix}-access", root_path=True
         )
 
     @property
     def refresh_name(self) -> str:
+        """The refresh cookie's name, resolved the same way as
+        :attr:`access_name`. Path-scoped, so ``__Host-`` is invalid here
+        by definition - only ``__Secure-`` applies."""
         # Path-scoped, so __Host- is invalid here by definition.
         return self.explicit_refresh_name or self.resolved_name(
             f"{self.prefix}-refresh", root_path=False
@@ -102,6 +110,10 @@ class CookiePolicy:
 
     @property
     def csrf_name(self) -> str:
+        """The CSRF cookie's name, resolved the same way as
+        :attr:`access_name`. Readable by JavaScript (never ``httponly``),
+        but not exempt from the ``__Host-``/``__Secure-`` prefix rules -
+        see the class docstring on cookie tossing."""
         # Deliberately readable by JavaScript (not httponly): the client
         # must echo it back. That doesn't exempt it from prefixing - see
         # the class docstring on cookie tossing.

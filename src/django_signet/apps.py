@@ -3,12 +3,18 @@ from django.core.checks import register
 
 
 class SignetConfig(AppConfig):
+    """Registers Signet's system checks and its password-change revocation
+    receiver when the app is ready."""
+
     name = "django_signet"
     label = "django_signet"
     verbose_name = "Signet JWT authentication"
     default_auto_field = "django.db.models.BigAutoField"
 
     def ready(self) -> None:
+        """Register ``ALL_CHECKS`` under the ``signet`` tag, and connect
+        :func:`django_signet.revocation.revoke_on_password_change` to the
+        configured user model's ``pre_save`` signal."""
         # Imported here, not at module scope: Django forbids importing
         # models (directly or via get_user_model()) before the app
         # registry is fully populated, and ready() is the first point at

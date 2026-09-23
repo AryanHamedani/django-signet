@@ -20,9 +20,17 @@ class TokenObtainSerializer(serializers.Serializer[Any]):
 
     @property
     def username_field(self) -> str:
+        """The active user model's ``USERNAME_FIELD``, resolved at
+        instantiation time so a swapped user model is picked up without
+        any change here."""
         return get_user_model().USERNAME_FIELD
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """Authenticate the credentials and return ``{"user": user}``, or
+        raise. One error message for a bad username and a bad password
+        alike (see ``GENERIC_FAILURE``), so the endpoint cannot be used to
+        enumerate accounts.
+        """
         user = authenticate(
             request=self.context.get("request"),
             username=attrs[self.username_field],

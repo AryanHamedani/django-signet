@@ -42,6 +42,10 @@ class Token(abc.ABC):
     leeway = setting("LEEWAY")
 
     def get_backend(self) -> SigningBackend:
+        """The signing backend named by the project's ``SIGNET`` settings.
+        Resolved afresh on every call, like every other ``setting()``-backed
+        value, so ``override_settings`` works in tests.
+        """
         return get_backend()
 
     def mint(
@@ -51,6 +55,14 @@ class Token(abc.ABC):
         family_id: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> MintedToken:
+        """Build and sign a fresh token for ``subject``.
+
+        ``family_id`` becomes the ``sid`` claim when given;
+        :meth:`RefreshToken.mint <django_signet.tokens.refresh.RefreshToken.mint>`
+        requires it. ``extra`` is merged in under the reserved claims -
+        see :func:`django_signet.tokens.claims.build_claims` for why a
+        reserved claim can never be overwritten by it.
+        """
         claims, expires_at = build_claims(
             subject=subject,
             typ=self.typ,
@@ -68,6 +80,12 @@ class Token(abc.ABC):
         )
 
     def verify(self, raw: str) -> dict[str, Any]:
+        """Decode, then check this is the right token flavour and every
+        required claim is present, raising ``TokenInvalid``/``TokenExpired``
+        (never a bare ``KeyError`` or a crypto-library exception) for
+        anything wrong. ``typ`` is what stops a refresh token being
+        replayed as an access token.
+        """
         claims = self.get_backend().verify(
             raw, audience=self.audience, issuer=self.issuer, leeway=self.leeway
         )
