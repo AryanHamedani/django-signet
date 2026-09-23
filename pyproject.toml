@@ -189,6 +189,7 @@ source_modules = [
     "django_signet.exceptions",
     "django_signet.hashing",
     "django_signet.signals",
+    "django_signet.users",
 ]
 forbidden_modules = [
     "django_signet.tokens",

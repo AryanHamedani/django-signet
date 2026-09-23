@@ -29,7 +29,14 @@ class SignetViewMixin:
     rotation = RotationPolicy()
 
     def get_claims(self, user: Any) -> dict[str, Any]:
-        """Extra claims to embed in both tokens. Reserved claims are ignored."""
+        """Extra claims to embed in both tokens. Reserved claims are ignored.
+
+        Called at login and again on every refresh, with the user freshly
+        loaded from the refresh token's subject - so a claim defined here
+        survives rotation and tracks the user's current state. Login and
+        refresh are separate views: define this once, on a class both
+        share, or the two will disagree.
+        """
         _ = user  # part of the overridable hook signature, unused by default
         return {}
 
@@ -154,7 +161,7 @@ class TokenRefreshView(SignetViewMixin, APIView):
                 return self.csrf_failure()
 
         try:
-            pair = self.rotation.rotate(raw)
+            pair = self.rotation.rotate(raw, get_claims=self.get_claims)
         except SignetError:
             # Covers invalid, expired, revoked and reused alike. The family
             # has already been burned by the policy where appropriate.

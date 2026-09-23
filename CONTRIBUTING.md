@@ -42,7 +42,8 @@ Module boundaries are enforced by `import-linter` contracts in
 - `tokens` is a leaf: it knows nothing about storage, the wire, or DRF.
 - `transport` moves bytes: it knows nothing about storage or authentication.
 - `sessions` persists and rotates: it never touches the wire.
-- `conf`, `exceptions`, `hashing` and `signals` depend on nothing above them.
+- `conf`, `exceptions`, `hashing`, `signals` and `users` depend on nothing above
+  them.
 
 If your change needs to cross a boundary, that is a design discussion — open
 an issue before writing the code.

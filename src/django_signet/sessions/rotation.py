@@ -34,6 +34,7 @@ only confused, logged-out users.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -44,6 +45,7 @@ from django.utils import timezone
 
 from django_signet.conf import setting
 from django_signet.exceptions import (
+    SignetError,
     TokenExpired,
     TokenInvalid,
     TokenReused,
@@ -56,7 +58,9 @@ from django_signet.sessions.stores.orm import ORMTokenStore
 from django_signet.signals import token_reuse_detected
 from django_signet.tokens.access import AccessToken
 from django_signet.tokens.base import MintedToken
+from django_signet.tokens.claims import session_id
 from django_signet.tokens.refresh import RefreshToken
+from django_signet.users import get_active_user
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +136,10 @@ class RotationPolicy:
             return self._mint_into(family, subject=str(user.pk), extra=extra)
 
     def rotate(
-        self, raw_refresh: str, *, extra: dict[str, Any] | None = None
+        self,
+        raw_refresh: str,
+        *,
+        get_claims: Callable[[Any], dict[str, Any]] | None = None,
     ) -> SessionPair:
         """Redeem a refresh token for a new pair.
 
@@ -140,20 +147,42 @@ class RotationPolicy:
         unauthenticated digest lookup would be an oracle for guessing
         live tokens.
 
-        ``extra`` is merged into both minted tokens' claims verbatim (see
-        :func:`django_signet.tokens.claims.build_claims`) and is
-        indistinguishable, once signed, from a claim the library itself
-        issued. It must be derived from trusted server-side state,
-        re-evaluated at rotation time - never forwarded from the request
-        body. A caller that lets client-controlled JSON reach this
-        parameter lets the client forge its own claims.
+        The subject is then loaded and checked (see :meth:`get_user`)
+        before the token is consumed - issuing a token is exactly as much
+        an authentication decision as accepting one, and a disabled
+        account must not be able to mint itself a fresh access token that
+        a verifier outside this library would accept (CVE-2024-22513, at
+        the issuance layer). A rejected subject burns the whole family,
+        not just this request, so reactivating the account later does not
+        revive a session that was live when it was disabled.
+
+        ``get_claims``, if given, is called with that freshly loaded user
+        and its result is merged into both minted tokens' claims verbatim
+        (see :func:`django_signet.tokens.claims.build_claims`). Once
+        signed it is indistinguishable from a claim the library itself
+        issued, so it must be derived from trusted server-side state - the
+        user object it is handed - never forwarded from the request body.
+        Re-deriving it here, at rotation time, is what keeps custom claims
+        alive across refreshes and current with the user's state.
         """
         claims = self.refresh_token_class().verify(raw_refresh)
+        user = self._active_user(claims)
         digest = token_digest(raw_refresh)
         result = self.store.consume(digest)
         return self._handle_consume_result(
-            result, digest, subject=claims["sub"], extra=extra
+            result, digest, user=user, get_claims=get_claims
         )
+
+    def get_user(self, claims: dict[str, Any]) -> Any:
+        """Hook: resolve a verified refresh token's subject to a user who
+        may keep a session, or raise any ``SignetError`` to refuse.
+
+        Defaults to :func:`django_signet.users.get_active_user` - the same
+        function ``BaseJWTAuthentication.get_user`` uses - so the refresh
+        path and every authenticated request apply one rule. Refusing
+        burns the family (see :meth:`rotate`).
+        """
+        return get_active_user(claims.get("sub"))
 
     def on_reuse_detected(self, family: Any) -> None:
         """Hook, called after the family is burned and before ``TokenReused``
@@ -168,13 +197,27 @@ class RotationPolicy:
 
     # --------------------------------------------------------------- private
 
+    def _active_user(self, claims: dict[str, Any]) -> Any:
+        try:
+            return self.get_user(claims)
+        except SignetError:
+            # RevocationReason has no "account disabled" member (spec
+            # section 6 fixes the vocabulary); disabling or deleting an
+            # account is an administrative act, so ADMIN is the recorded
+            # cause.
+            self._revoke_named_family(claims, RevocationReason.ADMIN)
+            raise
+
+    def _revoke_named_family(self, claims: dict[str, Any], reason: str) -> None:
+        self.store.revoke_family(session_id(claims), reason)
+
     def _handle_consume_result(
         self,
         result: ConsumeResult,
         digest: str,
         *,
-        subject: str,
-        extra: dict[str, Any] | None,
+        user: Any,
+        get_claims: Callable[[Any], dict[str, Any]] | None,
     ) -> SessionPair:
         if result.outcome is Outcome.NOT_FOUND:
             raise TokenInvalid("refresh token is not recognised")
@@ -185,7 +228,8 @@ class RotationPolicy:
         if result.outcome is Outcome.ALREADY_CONSUMED:
             return self._handle_replay(digest, result.family)
 
-        pair = self._mint_into(result.family, subject=subject, extra=extra)
+        extra = get_claims(user) if get_claims is not None else None
+        pair = self._mint_into(result.family, subject=str(user.pk), extra=extra)
         self._grace_put(digest, pair)
         return pair
 

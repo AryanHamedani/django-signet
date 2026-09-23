@@ -313,3 +313,47 @@ def test_a_mint_failure_leaves_no_orphan_family_or_token(user):
 
     assert TokenFamily.objects.count() == 0
     assert IssuedToken.objects.count() == 0
+
+
+# ------------------------------------------- final review, Group A: C3, I2
+
+
+def test_rotate_rejects_an_inactive_user_and_revokes_the_family(policy, user):
+    """C3 at the policy level, independent of any view: a direct caller of
+    ``rotate()`` - the issuance layer every refresh goes through - must
+    not mint for a disabled account, and must burn the family so that
+    reactivation cannot revive it."""
+    pair = policy.open_session(user)
+    user.is_active = False
+    user.save(update_fields=["is_active"])
+
+    with pytest.raises(TokenRevoked):
+        policy.rotate(pair.refresh.value)
+    pair.family.refresh_from_db()
+    assert pair.family.is_live is False
+    assert pair.family.revoked_reason == RevocationReason.ADMIN
+
+
+def test_rotate_rejects_a_deleted_user(policy, user):
+    """The subject no longer resolves at all: rejected as invalid, and the
+    ORM family went with the user (``on_delete=CASCADE``)."""
+    pair = policy.open_session(user)
+    user.delete()
+    with pytest.raises(TokenInvalid):
+        policy.rotate(pair.refresh.value)
+
+
+def test_rotate_derives_extra_claims_from_the_user_it_loads(policy, user):
+    """I2 at the policy level: ``get_claims`` is called with the user
+    ``rotate()`` loaded from ``sub`` - server-side state, re-evaluated at
+    rotation time - and its result lands in both minted tokens."""
+    seen = []
+
+    def get_claims(loaded):
+        seen.append(loaded)
+        return {"org": "acme"}
+
+    pair = policy.rotate(policy.open_session(user).refresh.value, get_claims=get_claims)
+    assert seen == [user]
+    assert AccessToken().verify(pair.access.value)["org"] == "acme"
+    assert pair.refresh.claims["org"] == "acme"

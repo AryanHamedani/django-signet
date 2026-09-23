@@ -6,8 +6,9 @@ from django_signet.csrf import CSRF_HEADER
 from django_signet.models import RevocationReason, TokenFamily
 from django_signet.sessions.rotation import RotationPolicy
 from django_signet.sessions.stores.cache import CacheTokenStore
+from django_signet.tokens.access import AccessToken
 from django_signet.transport.cookie import CookiePolicy
-from django_signet.views import LogoutAllView
+from django_signet.views import LogoutAllView, TokenObtainView, TokenRefreshView
 
 pytestmark = pytest.mark.django_db
 POLICY = CookiePolicy()
@@ -178,3 +179,47 @@ def test_logout_all_returns_501_when_the_store_cannot_enumerate(account):
     force_authenticate(request, user=account)
     response = _CacheBackedLogoutAllView.as_view()(request)
     assert response.status_code == 501
+
+
+# ------------------------------------------- final review, Group A: I2
+
+
+class _OrgClaims:
+    """Shared by the login and refresh views below, exactly as a project
+    would share one ``get_claims`` between the two endpoints."""
+
+    def get_claims(self, user):
+        return {"org": "acme"}
+
+
+class _ClaimsLoginView(_OrgClaims, TokenObtainView):
+    pass
+
+
+class _ClaimsRefreshView(_OrgClaims, TokenRefreshView):
+    pass
+
+
+def test_a_custom_claim_survives_a_refresh(account):
+    """I2: ``get_claims()`` used to run only at login, so every custom
+    claim silently vanished from the access token after the first
+    refresh. The refresh path must re-derive claims from the user it
+    loads, not drop them. Red on revert of the ``get_claims=`` argument
+    ``TokenRefreshView.post`` passes to ``RotationPolicy.rotate``."""
+    factory = APIRequestFactory()
+    login = _ClaimsLoginView.as_view()(
+        factory.post("/", {"username": "bob", "password": PASSWORD}, format="json")
+    )
+    assert AccessToken().verify(login.cookies[POLICY.access_name].value)["org"] == (
+        "acme"
+    )
+
+    csrf_value = login.cookies[POLICY.csrf_name].value
+    request = factory.post("/", **{CSRF_HEADER: csrf_value})
+    request.COOKIES[POLICY.refresh_name] = login.cookies[POLICY.refresh_name].value
+    request.COOKIES[POLICY.csrf_name] = csrf_value
+    refreshed = _ClaimsRefreshView.as_view()(request)
+
+    assert refreshed.status_code == 200
+    claims = AccessToken().verify(refreshed.cookies[POLICY.access_name].value)
+    assert claims["org"] == "acme"
