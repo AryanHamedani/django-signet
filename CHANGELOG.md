@@ -70,3 +70,9 @@ design flaw demands it, and every such change is listed here.
   `COOKIE_SECURE=False`. Each violated requirement is its own message,
   naming the setting and the cookie. A derived (`None`) name is never
   flagged.
+- System check `signet.E004` no longer rejects a verify-only resource
+  server. It is now raised only for an RS algorithm with no
+  `VERIFYING_KEY`, which verifies nothing. An RS algorithm with no
+  `SIGNING_KEY` - where `get_backend()` still verifies and only signing
+  fails - is the new Warning `signet.W011`: login and refresh cannot work
+  there, which is expected on a resource server that holds no private key.

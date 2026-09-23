@@ -281,32 +281,52 @@ def check_grace_cache(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
 
 
 def check_signing_key(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
-    """RS algorithms need both an explicit signing (private) key and an
-    explicit verifying (public) key - ``SECRET_KEY`` is not a valid RSA key
-    for either role. ``get_backend()`` raises ``ImproperlyConfigured`` when
-    either is missing, so every request would fail: this is a deployment
-    that cannot verify a single token, not a style concern, hence ``Error``
-    rather than ``Warning``.
+    """RS algorithms need explicit keys - ``SECRET_KEY`` is not a valid RSA
+    key for either role - but the two keys do different jobs, and missing
+    each one breaks a different thing.
+
+    No ``VERIFYING_KEY`` is an ``Error`` (signet.E004): ``get_backend()``
+    raises ``ImproperlyConfigured``, so not a single token can be verified
+    and every authenticated request fails.
+
+    No ``SIGNING_KEY`` is a ``Warning`` (signet.W011): ``get_backend()``
+    still builds a backend that verifies, and only ``sign()`` raises - so
+    login and refresh fail while access tokens minted elsewhere are
+    accepted. That is exactly a verify-only resource server, which
+    legitimately holds no private key and must not fail
+    ``manage.py check``; anywhere else it is a deployment that cannot mint
+    tokens.
     """
     cfg = _signet()
     algorithm = _as_str(cfg.get("ALGORITHM"), "HS256")
     if not algorithm.startswith("RS"):
         return []
-    missing = [key for key in ("SIGNING_KEY", "VERIFYING_KEY") if not cfg.get(key)]
-    if not missing:
-        return []
-    return [
-        Error(
-            f"ALGORITHM is {algorithm!r} but {' and '.join(missing)} "
-            f"{'is' if len(missing) == 1 else 'are'} not set.",
-            hint="RSA algorithms need an explicit PEM private key "
-            "(SIGNING_KEY) and public key (VERIFYING_KEY); SECRET_KEY is "
-            "not a valid RSA key for either. get_backend() raises "
-            "ImproperlyConfigured for either being missing, so every "
-            "request would fail.",
-            id="signet.E004",
+    messages: list[CheckMessage] = []
+    if not cfg.get("VERIFYING_KEY"):
+        messages.append(
+            Error(
+                f"ALGORITHM is {algorithm!r} but VERIFYING_KEY is not set.",
+                hint="RSA algorithms need an explicit PEM public key "
+                "(VERIFYING_KEY); SECRET_KEY is not a valid RSA key. "
+                "get_backend() raises ImproperlyConfigured without it, so "
+                "no token can be verified and every request would fail.",
+                id="signet.E004",
+            )
         )
-    ]
+    if not cfg.get("SIGNING_KEY"):
+        messages.append(
+            CheckWarning(
+                f"ALGORITHM is {algorithm!r} but SIGNING_KEY is not set, so "
+                "this deployment cannot mint tokens: login and refresh will "
+                "fail.",
+                hint="Expected for a verify-only resource server, which "
+                "accepts access tokens minted elsewhere and holds no private "
+                "key. Anywhere that serves login or refresh, set SIGNING_KEY "
+                "to the PEM private key; SECRET_KEY is not a valid RSA key.",
+                id="signet.W011",
+            )
+        )
+    return messages
 
 
 def _unusable_store_error(message: str) -> CheckMessage:

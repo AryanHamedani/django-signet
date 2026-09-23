@@ -60,7 +60,7 @@ def test_present_grace_cache_is_quiet():
 )
 def test_rs_algorithm_without_keys_is_an_error():
     ids = [e.id for e in check_signing_key(None)]
-    assert "signet.E004" in ids
+    assert ids == ["signet.E004", "signet.W011"]
 
 
 @override_settings(
@@ -68,15 +68,21 @@ def test_rs_algorithm_without_keys_is_an_error():
 )
 def test_rs_algorithm_missing_only_verifying_key_is_an_error():
     ids = [e.id for e in check_signing_key(None)]
-    assert "signet.E004" in ids
+    assert ids == ["signet.E004"]
 
 
 @override_settings(
     SIGNET={"ALGORITHM": "RS256", "SIGNING_KEY": None, "VERIFYING_KEY": "pub"}
 )
-def test_rs_algorithm_missing_only_signing_key_is_an_error():
-    ids = [e.id for e in check_signing_key(None)]
-    assert "signet.E004" in ids
+def test_rs_algorithm_missing_only_signing_key_is_a_warning():
+    """L4 - changed deliberately from asserting signet.E004: without a
+    SIGNING_KEY ``get_backend()`` still builds a backend that verifies,
+    only ``sign()`` fails. That is a legitimate verify-only resource
+    server, which must not fail ``manage.py check``; it is warned about,
+    because login and refresh cannot work there."""
+    messages = check_signing_key(None)
+    assert [m.id for m in messages] == ["signet.W011"]
+    assert "SIGNING_KEY" in messages[0].msg
 
 
 @override_settings(
