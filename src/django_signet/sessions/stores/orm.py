@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from django.utils import timezone
 
 from django_signet.models import IssuedToken, TokenFamily
-from django_signet.sessions.stores.base import ConsumeResult, Outcome, TokenStore
+from django_signet.sessions.stores.base import (
+    ConsumeResult,
+    FamilyLike,
+    Outcome,
+    TokenStore,
+)
 
 
 class ORMTokenStore(TokenStore):
@@ -40,10 +45,17 @@ class ORMTokenStore(TokenStore):
         )
 
     def issue(
-        self, family: TokenFamily, digest: str, expires_at: datetime
+        self, family: FamilyLike, digest: str, expires_at: datetime
     ) -> IssuedToken:
+        # The ABC only promises FamilyLike - any structurally-compatible
+        # object, in principle from any TokenStore's open_family(). This
+        # store only ever passes its own real TokenFamily instances
+        # through this port in practice (mixing stores mid-family is a
+        # caller bug the type system can't catch either way), and the FK
+        # assignment below needs the concrete model, not just the
+        # protocol's shape.
         return IssuedToken.objects.create(
-            family=family, digest=digest, expires_at=expires_at
+            family=cast(TokenFamily, family), digest=digest, expires_at=expires_at
         )
 
     def consume(self, digest: str) -> ConsumeResult:

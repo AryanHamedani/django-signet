@@ -3,17 +3,21 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from django.core.cache import caches
 from django.utils import timezone
 
-from django_signet.sessions.stores.base import ConsumeResult, Outcome, TokenStore
+from django_signet.sessions.stores.base import (
+    ConsumeResult,
+    FamilyLike,
+    Outcome,
+    TokenLike,
+    TokenStore,
+)
 
 if TYPE_CHECKING:
     from django.core.cache.backends.base import BaseCache
-
-    from django_signet.models import IssuedToken, TokenFamily
 
 _FAMILY = "signet:fam:{}"
 _TOKEN = "signet:tok:{}"
@@ -23,10 +27,9 @@ _REVOKED = "signet:rev:{}"
 
 @dataclass
 class _CachedFamily:
-    """Duck-types the parts of ``TokenFamily`` the rest of the codebase
-    reads. Never a real model instance - there is no row, no table -
-    but callers that only read ``.id``, ``.user``, ``.expires_at`` and
-    ``.is_live`` cannot tell the difference."""
+    """Satisfies ``FamilyLike`` structurally - never a real model instance,
+    there is no row, no table - so it can stand in for a ``TokenFamily``
+    anywhere the ``TokenStore`` port promises one."""
 
     id: uuid.UUID
     user: Any
@@ -45,8 +48,9 @@ class _CachedFamily:
 
 @dataclass
 class _CachedToken:
-    """Duck-types the parts of ``IssuedToken`` the rest of the codebase
-    reads."""
+    """Satisfies ``TokenLike`` structurally, standing in for an
+    ``IssuedToken`` the same way ``_CachedFamily`` stands in for a
+    ``TokenFamily``."""
 
     id: uuid.UUID
     family_id: uuid.UUID
@@ -91,11 +95,14 @@ class CacheTokenStore(TokenStore):
 
     @staticmethod
     def _ttl(expires_at: datetime) -> int:
-        # A cache entry with a non-positive TTL would never be readable
-        # at all, so an already-expired token still gets a one-second
-        # window - just long enough for consume() to read it back and
-        # report EXPIRED rather than the misleading NOT_FOUND.
-        return max(1, int((expires_at - timezone.now()).total_seconds()))
+        # Floored well above zero - not to keep an expired token usable,
+        # it never is, consume() always compares expires_at itself - but
+        # so an already-expired entry reliably survives long enough after
+        # being written for consume() to read it back and classify it as
+        # EXPIRED. A 1-second floor would flake under any real scheduling
+        # delay between issue() and the read that follows it, reporting
+        # the misleading NOT_FOUND instead once the cache evicted it first.
+        return max(60, int((expires_at - timezone.now()).total_seconds()))
 
     def _is_revoked(self, family_id: uuid.UUID) -> bool:
         return self.cache.get(_REVOKED.format(family_id)) is not None
@@ -107,7 +114,7 @@ class CacheTokenStore(TokenStore):
         *,
         user_agent: str = "",
         ip_address: str | None = None,
-    ) -> TokenFamily:
+    ) -> FamilyLike:
         # Carried along for parity with TokenFamily, but not for an audit
         # trail a cache cannot offer anyway: this entry, and everything
         # in it, disappears with its TTL or a cache flush.
@@ -119,11 +126,9 @@ class CacheTokenStore(TokenStore):
             ip_address=ip_address,
         )
         self.cache.set(_FAMILY.format(family.id), family, self._ttl(expires_at))
-        return cast("TokenFamily", family)
+        return family
 
-    def issue(
-        self, family: TokenFamily, digest: str, expires_at: datetime
-    ) -> IssuedToken:
+    def issue(self, family: FamilyLike, digest: str, expires_at: datetime) -> TokenLike:
         token = _CachedToken(
             id=uuid.uuid4(),
             family_id=family.id,
@@ -132,7 +137,7 @@ class CacheTokenStore(TokenStore):
             expires_at=expires_at,
         )
         self.cache.set(_TOKEN.format(digest), token, self._ttl(expires_at))
-        return cast("IssuedToken", token)
+        return token
 
     def consume(self, digest: str) -> ConsumeResult:
         token = self.cache.get(_TOKEN.format(digest))
@@ -172,10 +177,13 @@ class CacheTokenStore(TokenStore):
         return bool(family is not None and family.is_live)
 
     def revoke_family(self, family_id: uuid.UUID, reason: str) -> None:
-        # Cached forever (timeout=None), not for the family's remaining
-        # TTL: a denylist that let its own revocation entry expire would
+        # add(), not set(): first-reason-wins, matching TokenFamily.revoke()'s
+        # idempotency guard - a later routine LOGOUT must not silently
+        # overwrite an earlier REUSE_DETECTED security event. Cached
+        # forever (timeout=None), not for the family's remaining TTL: a
+        # denylist that let its own revocation entry expire would
         # silently revive the family it was recording as dead.
-        self.cache.set(_REVOKED.format(family_id), reason, None)
+        self.cache.add(_REVOKED.format(family_id), reason, None)
         self.cache.delete(_FAMILY.format(family_id))
 
     def revoke_all_for_user(self, user: Any, reason: str) -> None:

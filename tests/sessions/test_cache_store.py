@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from django_signet.models import RevocationReason
 from django_signet.sessions.stores.base import Outcome
-from django_signet.sessions.stores.cache import CacheTokenStore, _CachedFamily
+from django_signet.sessions.stores.cache import _REVOKED, CacheTokenStore, _CachedFamily
 
 pytestmark = pytest.mark.django_db
 FUTURE = timedelta(days=14)
@@ -68,6 +68,18 @@ def test_revoked_family_is_reported(store, user):
     fam = _open(store, user)
     store.revoke_family(fam.id, RevocationReason.LOGOUT)
     assert store.consume("a" * 64).outcome is Outcome.FAMILY_REVOKED
+
+
+def test_revoke_family_keeps_the_first_reason(store, user):
+    """TokenFamily.revoke() is first-reason-wins: a later routine LOGOUT
+    must not mask an earlier REUSE_DETECTED security event. Same port,
+    same guarantee - a set()-based revoke_family() (the second call
+    silently overwriting the first) would pass every other test in this
+    file but fail this one specifically."""
+    fam = _open(store, user)
+    store.revoke_family(fam.id, RevocationReason.REUSE_DETECTED)
+    store.revoke_family(fam.id, RevocationReason.LOGOUT)
+    assert cache.get(_REVOKED.format(fam.id)) == RevocationReason.REUSE_DETECTED
 
 
 def test_allowlist_mode_treats_absence_as_dead(store):
@@ -216,10 +228,18 @@ def test_consume_reports_family_revoked_when_revocation_wins_the_add_race(
     can act on the result, already revoked."""
     fam = _open(store, user)
     digest = "a" * 64
+    consumed_key = f"signet:used:{digest}"
 
     original_add = store.cache.add
 
     def add_then_revoke(key, value, timeout=None, version=None):
+        # Only the claim's own add() should trigger the side effect below.
+        # revoke_family() also calls cache.add() (for its own
+        # first-reason-wins guarantee), and this wrapper patches the same
+        # cache's add() globally, so triggering the side effect for every
+        # key would have revoke_family() call itself forever.
+        if key != consumed_key:
+            return original_add(key, value, timeout, version)
         won = original_add(key, value, timeout, version)
         store.revoke_family(fam.id, RevocationReason.REUSE_DETECTED)
         return won
