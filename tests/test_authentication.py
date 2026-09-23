@@ -1,4 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.test import APIRequestFactory
 
@@ -12,8 +16,11 @@ from django_signet.authentication import (
     StrictHybridJWTAuthentication,
 )
 from django_signet.csrf import CSRF_HEADER
+from django_signet.exceptions import TransportError
 from django_signet.models import RevocationReason
 from django_signet.sessions.rotation import RotationPolicy
+from django_signet.tokens.access import AccessToken
+from django_signet.transport.base import Transport
 
 pytestmark = pytest.mark.django_db
 
@@ -347,3 +354,143 @@ def test_validate_claims_hook_can_reject(pair):
     with pytest.raises(AuthenticationFailed) as exc:
         auth.authenticate(_cookie_request(auth, pair))
     assert str(exc.value) == GENERIC_FAILURE
+
+
+# ---------------------------------------------------- fix round 1: finding 1
+
+
+def test_a_validation_error_from_a_malformed_subject_fails_generically(
+    pair, monkeypatch
+):
+    """ValidationError is what a UUID-keyed custom user model's
+    UUIDField.get_prep_value() raises for a `sub` that isn't a valid UUID
+    (this project's own TokenFamily.id is one such field, so it's not
+    exotic). This project's own User model has an integer pk and can't
+    trigger it via a real lookup, and Django doesn't support swapping
+    AUTH_USER_MODEL per-test once the app registry is loaded, so the
+    manager is monkeypatched to reproduce the exact exception instead.
+    Would fail against the pre-fix except clause - it doesn't list
+    ValidationError, so it propagates unhandled as a 500 rather than the
+    generic 401 every other bad-credential cause here produces."""
+    user_model = get_user_model()
+
+    def _raise_validation_error(*args, **kwargs):
+        raise ValidationError("“not-a-uuid” is not a valid UUID.")
+
+    monkeypatch.setattr(user_model.objects, "get", _raise_validation_error)
+
+    auth = CookieJWTAuthentication()
+    with pytest.raises(AuthenticationFailed) as exc:
+        auth.authenticate(_cookie_request(auth, pair))
+    assert str(exc.value) == GENERIC_FAILURE
+
+
+# ---------------------------------------------------- fix round 1: finding 2
+
+
+class _StubAmbientTransport(Transport):
+    """Stands in for a hypothetical future ambient transport that carries
+    no CookiePolicy, to prove a live CSRF decision can never be silently
+    dropped just because ``_enforce_csrf_if_needed`` doesn't know how to
+    enforce it for this transport."""
+
+    def __init__(self, raw_token):
+        self._raw_token = raw_token
+
+    @property
+    def is_ambient(self):
+        return True
+
+    def extract_access(self, request):
+        return self._raw_token
+
+    def extract_refresh(self, request):
+        raise TransportError("not used by this test")
+
+    def attach(self, response, pair):
+        pass
+
+    def clear(self, response):
+        pass
+
+
+def test_an_ambient_transport_with_no_csrf_policy_fails_loudly(pair):
+    """A transport that is ambient but not Cookie/Hybrid used to sail
+    through CSRF entirely unchecked - no exception, no log line. This
+    proves the request now fails loudly (NotImplementedError) instead.
+    Would fail against the pre-fix code, which returned a successful
+    (user, claims) pair here with no exception raised at all."""
+
+    class StubAuth(CookieJWTAuthentication):
+        transport = _StubAmbientTransport(pair.access.value)
+
+    auth = StubAuth()
+    request = APIRequestFactory().post("/")
+    with pytest.raises(NotImplementedError):
+        auth.authenticate(request)
+
+
+# ---------------------------------------------------- fix round 1: finding 3
+
+
+def test_missing_is_active_attribute_fails_closed(pair, monkeypatch):
+    """Fails closed, unlike Django's own ModelBackend: a user model with
+    no is_active attribute at all must be rejected, not trusted - the
+    entire point of hardening against CVE-2024-22513. SimpleNamespace has
+    no is_active attribute at all (not even None), which a plain
+    getattr(..., default) can't tell apart from "absent". Would fail
+    against the original getattr(user, "is_active", None) with "None
+    passes" logic, which would authenticate this stand-in successfully."""
+    user_model = get_user_model()
+    stand_in = SimpleNamespace(pk=1)  # deliberately no is_active attribute
+
+    def _return_stand_in(*args, **kwargs):
+        return stand_in
+
+    monkeypatch.setattr(user_model.objects, "get", _return_stand_in)
+
+    auth = CookieJWTAuthentication()
+    with pytest.raises(AuthenticationFailed) as exc:
+        auth.authenticate(_cookie_request(auth, pair))
+    assert str(exc.value) == GENERIC_FAILURE
+
+
+def test_is_active_true_still_authenticates(pair, user):
+    """The other two branches of the three-way split, alongside the
+    missing-attribute test above and the existing
+    test_an_inactive_user_is_rejected (is_active=False)."""
+    user.is_active = True
+    user.save(update_fields=["is_active"])
+    auth = CookieJWTAuthentication()
+    authed, _ = auth.authenticate(_cookie_request(auth, pair))
+    assert authed == user
+
+
+# ---------------------------------------------------- fix round 1: finding 4
+
+
+def test_strict_auth_rejects_a_token_with_no_sid_claim(user):
+    """Every existing revocation test uses a real family id minted via
+    open_session(), so a check_family() that treated a missing sid as
+    "nothing to check" would pass them all while defeating the Strict*
+    promise. Minting directly, not via open_session(), is what lets this
+    test omit the claim. Would fail against a check_family() that
+    returned early instead of raising when `sid` is absent."""
+    raw = AccessToken().mint(str(user.pk)).value
+    auth = StrictCookieJWTAuthentication()
+    request = APIRequestFactory().get("/")
+    request.COOKIES[auth.transport.policy.access_name] = raw
+    with pytest.raises(AuthenticationFailed):
+        auth.authenticate(request)
+
+
+def test_strict_auth_rejects_a_token_with_a_malformed_sid_claim(user):
+    """Companion to the missing-sid test: a `sid` present but not a valid
+    UUID must also reject, not be silently ignored or crash as an
+    unhandled 500."""
+    raw = AccessToken().mint(str(user.pk), extra={"sid": "not-a-uuid"}).value
+    auth = StrictCookieJWTAuthentication()
+    request = APIRequestFactory().get("/")
+    request.COOKIES[auth.transport.policy.access_name] = raw
+    with pytest.raises(AuthenticationFailed):
+        auth.authenticate(request)
