@@ -337,14 +337,14 @@ def test_logout_all_refuses_a_refresh_token_that_was_already_rotated(account):
     """R1: logout-all checked only that the token's *family* was live, so
     a refresh token already consumed by a rotation - lifted from a log or
     a proxy - still signed its user out on every device for the rest of
-    its 14-day lifetime. It must now redeem the token, and only a LIVE
-    redemption may revoke anything.
+    its 14-day lifetime. It must now redeem the token.
 
-    Inside the grace window the replay is the benign double-tab case: it
-    is refused and burns nothing. Outside it, the replay is reuse exactly
-    as at refresh - its own family is burned - and in neither case does
-    the user's other session die. Red on revert of the ``_redeem`` call in
-    ``RotationPolicy.revoke_all`` (200, and every session revoked).
+    Outside the grace window the replay is reuse exactly as at refresh:
+    its own family is burned, and the user's other session does not die.
+    (Inside the window it is a redemption - see
+    ``test_logout_inside_the_grace_window_revokes_the_session``.) Red on
+    revert of the ``_redeem`` call in ``RotationPolicy.revoke_all`` (200,
+    and every session revoked).
     """
     victim = _login()
     other_sid = RefreshToken().verify(_login().cookies[POLICY.refresh_name].value)[
@@ -354,14 +354,47 @@ def test_logout_all_refuses_a_refresh_token_that_was_already_rotated(account):
     csrf_value = victim.cookies[POLICY.csrf_name].value
     assert _refresh(victim, old, csrf_value).status_code == 200
 
-    assert _present(APIClient(), "logout-all", old, csrf_value).status_code == 401
-    assert TokenFamily.objects.filter(revoked_at__isnull=True).count() == 2
-
     cache.clear()  # the grace window has passed
     assert _present(APIClient(), "logout-all", old, csrf_value).status_code == 401
     mine = TokenFamily.objects.get(pk=RefreshToken().verify(old)["sid"])
     assert mine.revoked_reason == RevocationReason.REUSE_DETECTED
     assert TokenFamily.objects.get(pk=other_sid).is_live is True
+
+
+def test_logout_inside_the_grace_window_revokes_the_session(account):
+    """R1 grace-window correction: a tab's refresh consumes T1 and issues
+    T2, then a logout still carrying T1 arrives inside the grace window.
+    Treating that replay as "not LIVE" revoked nothing yet answered 200
+    "Signed out." - and T2 kept refreshing, so a browser whose refresh
+    ``Set-Cookie`` landed last stayed fully signed in behind a UI that said
+    otherwise. Refresh already honours a grace replay (it hands over T2),
+    so holding T1 inside the window already grants everything T2 does:
+    logout must win. Red on revert of the grace branch in
+    ``RotationPolicy._redeem`` (family live, T2 refresh 200).
+    """
+    tab = _login()
+    t1 = tab.cookies[POLICY.refresh_name].value
+    csrf_value = tab.cookies[POLICY.csrf_name].value
+    assert _refresh(tab, t1, csrf_value).status_code == 200
+    t2 = tab.cookies[POLICY.refresh_name].value
+    assert t2 != t1
+
+    assert _present(APIClient(), "logout", t1, csrf_value).status_code == 200
+    assert TokenFamily.objects.get().is_live is False
+    assert _refresh(APIClient(), t2, csrf_value).status_code == 401
+
+
+def test_logout_all_inside_the_grace_window_revokes_every_session(account):
+    """The logout-all half of the correction above: a grace-window replay
+    of T1 is a redemption, so it revokes every session of the user."""
+    victim = _login()
+    _login()
+    old = victim.cookies[POLICY.refresh_name].value
+    csrf_value = victim.cookies[POLICY.csrf_name].value
+    assert _refresh(victim, old, csrf_value).status_code == 200
+
+    assert _present(APIClient(), "logout-all", old, csrf_value).status_code == 200
+    assert TokenFamily.objects.filter(revoked_at__isnull=True).count() == 0
 
 
 def test_logout_with_a_rotated_refresh_token_is_detected_as_reuse(account):

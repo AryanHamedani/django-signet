@@ -184,9 +184,10 @@ class RotationPolicy:
         """Revoke the session a refresh token belongs to - logout.
 
         The token is *redeemed*, exactly as at refresh (see
-        :meth:`_redeem`): only the family's current token revokes it. An
-        older, already-consumed one goes through the same replay handling
-        as refresh - so a stolen token replayed here is burned as reuse and
+        :meth:`_redeem`): only the family's current token - or, inside the
+        grace window, the one it just replaced - revokes it. An older,
+        already-consumed one goes through the same replay handling as
+        refresh - so a stolen token replayed here is burned as reuse and
         reported, not quietly recorded as an ordinary logout.
         """
         claims = self.refresh_token_class().verify(raw_refresh)
@@ -196,7 +197,8 @@ class RotationPolicy:
         """Revoke every session of the refresh token's user - logout-all.
 
         The token is redeemed first (see :meth:`_redeem`), so only a
-        family's current refresh token can do this. An old one lifted from
+        family's current refresh token - or, inside the grace window, the
+        one it just replaced - can do this. An old one lifted from
         a log must not be able to log its user out everywhere for the rest
         of its lifetime: replayed here it is handled as at refresh, which
         at most burns its own family.
@@ -243,19 +245,29 @@ class RotationPolicy:
         self.store.revoke_family(session_id(claims), reason)
 
     def _redeem(self, raw_refresh: str, act: Callable[[], None]) -> None:
-        """Consume a refresh token and run ``act`` only if it was LIVE.
+        """Consume a refresh token and run ``act`` if it redeems.
 
-        Every other outcome is settled exactly as at refresh, by
-        :meth:`_settle`: an already-consumed token goes through the replay
-        handling, and outside the grace window is burned as reuse. A
-        replay the grace window absorbs is benign, so it burns nothing -
-        but it is not a LIVE redemption either, and revokes nothing.
+        It redeems when it is LIVE, or when it was already consumed but the
+        grace window still holds the pair its rotation produced - the same
+        replay refresh honours. Inside the window whoever holds the old
+        token can already fetch its successor at refresh and log out with
+        that, so honouring it here grants nothing new; refusing it would
+        let a logout racing a tab's refresh answer "Signed out." while the
+        successor stayed live. Every other outcome is settled exactly as
+        at refresh, by :meth:`_settle`: an already-consumed token with no
+        grace entry is burned as reuse, and the rest revoke nothing.
 
-        The consume and ``act`` share one transaction, so a refresh racing
-        this logout with the same token waits and then sees the family
-        revoked, rather than seeing the token consumed with no successor
-        and raising a false reuse alarm. The non-LIVE outcomes are settled
-        after the transaction, so a reuse burn is never rolled back with it.
+        The consume and a LIVE ``act`` share one transaction, so a refresh
+        of the same token that arrives while this logout is in flight
+        waits and then sees the family revoked, not a spent token with no
+        successor. That covers only this ordering. The reverse - a refresh
+        that has committed ``consume()`` but not yet written its grace
+        entry - still makes this logout read as reuse: the family is
+        burned as ``REUSE_DETECTED`` and ``token_reuse_detected`` fires, a
+        false alarm. It is the same window two tabs refreshing at once
+        already have, and is not closed here. The non-LIVE outcomes are
+        settled after the transaction, so a reuse burn is never rolled
+        back with it.
         """
         digest = token_digest(raw_refresh)
         with transaction.atomic():
@@ -264,7 +276,7 @@ class RotationPolicy:
                 act()
                 return
         if self._settle(result, digest) is not None:
-            raise TokenInvalid("refresh token was already rotated")
+            act()  # a grace-window replay: a redemption, as at refresh
 
     def _settle(self, result: ConsumeResult, digest: str) -> SessionPair | None:
         """Raise for every consume outcome but LIVE and ALREADY_CONSUMED.
