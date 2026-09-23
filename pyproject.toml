@@ -109,6 +109,12 @@ ignore = [
 # every time a model changes; `dependencies`/`operations` are Django's own
 # required class-attribute shape (plain lists), not a mutable-default bug.
 "src/django_signet/migrations/*.py" = ["RUF012"]
+# Django's check-registry protocol requires every registered function to
+# accept `app_configs` as a keyword parameter - `run_checks()` calls each
+# one as `check(app_configs=app_configs, databases=databases)` - whether or
+# not a given check consults it. The call signature belongs to Django, not
+# to this file, so an unused `app_configs` is not a style oversight.
+"src/django_signet/checks.py" = ["ARG001"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 8
