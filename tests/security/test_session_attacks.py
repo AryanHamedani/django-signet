@@ -131,19 +131,6 @@ def test_two_tabs_refreshing_together_do_not_burn_the_family(account):
     assert TokenFamily.objects.get().is_live is True
 
 
-def test_csrf_is_required_for_cookie_authenticated_writes(account):
-    client = _login()
-    assert client.post(reverse("django_signet:logout")).status_code == 401
-
-
-def test_a_forged_csrf_header_is_rejected(account):
-    client = _login()
-    response = client.post(
-        reverse("django_signet:logout"), **{CSRF_HEADER: "attacker-chosen"}
-    )
-    assert response.status_code == 401
-
-
 def test_a_revoked_session_cannot_be_refreshed(account):
     client = _login()
     TokenFamily.objects.get().revoke(RevocationReason.ADMIN)

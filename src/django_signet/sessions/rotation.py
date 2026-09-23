@@ -60,7 +60,7 @@ from django_signet.tokens.access import AccessToken
 from django_signet.tokens.base import MintedToken
 from django_signet.tokens.claims import session_id
 from django_signet.tokens.refresh import RefreshToken
-from django_signet.users import get_active_user
+from django_signet.users import get_active_user, load_user
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +177,34 @@ class RotationPolicy:
         burns the family (see :meth:`rotate`).
         """
         return get_active_user(claims.get("sub"))
+
+    def revoke(self, raw_refresh: str, reason: str) -> None:
+        """Revoke the session a refresh token belongs to - logout.
+
+        The signature is verified first, so only a credential this library
+        issued can name a family. The token need not be the family's
+        current one: whoever holds an older, consumed refresh token of a
+        family can already burn it by replaying it at refresh (reuse
+        detection), so accepting it here grants nothing new. Idempotent -
+        revoking a revoked family keeps the first reason.
+        """
+        claims = self.refresh_token_class().verify(raw_refresh)
+        self._revoke_named_family(claims, reason)
+
+    def revoke_all(self, raw_refresh: str, reason: str) -> None:
+        """Revoke every session of the refresh token's user - logout-all.
+
+        Deliberately stricter than :meth:`revoke`: the token's own family
+        must still be live. Otherwise an old refresh token lifted from a
+        log could log its user out everywhere for the rest of its
+        lifetime - a far wider blast radius than replaying it, which only
+        ever burns its own family. ``NotImplementedError`` from a store
+        that cannot enumerate a user's families propagates to the caller.
+        """
+        claims = self.refresh_token_class().verify(raw_refresh)
+        if not self.store.is_live(session_id(claims)):
+            raise TokenRevoked("session is no longer live")
+        self.store.revoke_all_for_user(load_user(claims.get("sub")), reason)
 
     def on_reuse_detected(self, family: Any) -> None:
         """Hook, called after the family is burned and before ``TokenReused``

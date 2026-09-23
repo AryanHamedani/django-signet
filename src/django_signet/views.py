@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 from rest_framework import status
@@ -114,7 +115,19 @@ class TokenObtainView(SignetViewMixin, APIView):
         return response
 
 
-class TokenRefreshView(SignetViewMixin, APIView):
+class RefreshCredentialView(SignetViewMixin, APIView):
+    """Base for the endpoints that act on the *refresh* credential:
+    refresh, logout and logout-all.
+
+    None of them authenticates through the access token. It lives five
+    minutes and its cookie expires with it, so an endpoint that required
+    it could not log out a session that had been idle for longer - and
+    that is most sessions. The refresh credential is what keeps a session
+    alive, so it is what these endpoints read, verify and act on; its
+    cookie path defaults to the auth mount prefix so that it reaches all
+    three.
+    """
+
     authentication_classes = ()
     permission_classes = (AllowAny,)
 
@@ -123,11 +136,11 @@ class TokenRefreshView(SignetViewMixin, APIView):
         the browser attached on its own, rather than a header the client
         set explicitly - the same ambient/non-ambient distinction
         ``BaseJWTAuthentication.should_enforce_csrf`` makes for the access
-        token, applied here to the refresh token this view actually reads.
+        token, applied here to the refresh token these views actually read.
 
         Not ``HybridTransport.used_cookie()``: that helper checks for the
         *access* cookie, which is what the authenticator's own CSRF
-        decision needs. This view never touches the access token at all,
+        decision needs. These views never touch the access token at all,
         so the right question is whether the refresh credential itself
         came from ``self.transport.cookie`` - checked directly rather than
         reusing a helper that would silently answer a different question.
@@ -141,24 +154,40 @@ class TokenRefreshView(SignetViewMixin, APIView):
             return True
         return transport.is_ambient
 
+    def read_refresh_credential(self, request: Any) -> str:
+        """The raw refresh token this request presents, CSRF-checked when it
+        is ambient. The one implementation every refresh-credential
+        endpoint uses.
+
+        Raises ``TransportError`` when the request carries none, and
+        ``CSRFFailed`` when it arrived ambiently without a matching
+        double-submit pair. Ambient credentials are exactly what makes
+        CSRF possible; a header a client set explicitly can't be forged by
+        a third-party page the same way. The check runs before the token
+        is used for anything: a request that fails it must not be able to
+        consume - and thereby burn the grace window on, or trigger reuse
+        detection against - a refresh token it was never entitled to
+        present, nor revoke the session it names.
+        """
+        raw = self.transport.extract_refresh(request)
+        if self.refresh_is_ambient(request):
+            validate_csrf(request, self.transport.policy)
+        return raw
+
+    def signed_out(self, detail: str) -> Response:
+        response = Response({"detail": detail})
+        self.transport.clear(response)
+        return response
+
+
+class TokenRefreshView(RefreshCredentialView):
     def post(self, request: Any) -> Response:
         try:
-            raw = self.transport.extract_refresh(request)
+            raw = self.read_refresh_credential(request)
+        except CSRFFailed:
+            return self.csrf_failure()
         except TransportError:
             return self.failure()
-
-        # Ambient credentials (a cookie the browser attaches on its own)
-        # are exactly what makes CSRF possible; a header a client set
-        # explicitly can't be forged by a third-party page the same way.
-        # This runs before the token is ever redeemed: a request that
-        # fails this check must not be able to consume - and thereby burn
-        # the grace window on, or trigger reuse detection against - a
-        # refresh token it was never entitled to present.
-        if self.refresh_is_ambient(request):
-            try:
-                validate_csrf(request, self.transport.policy)
-            except CSRFFailed:
-                return self.csrf_failure()
 
         try:
             pair = self.rotation.rotate(raw, get_claims=self.get_claims)
@@ -186,28 +215,46 @@ class TokenVerifyView(SignetViewMixin, APIView):
         return Response({"authenticated": True, "user_id": request.user.pk})
 
 
-class LogoutView(SignetViewMixin, APIView):
-    authentication_classes = (CookieJWTAuthentication,)
-    permission_classes = (IsAuthenticated,)
+class LogoutView(RefreshCredentialView):
+    """Revoke the session the refresh credential names.
+
+    Idempotent: with no credential, or one that no longer verifies, there
+    is nothing to revoke - and the cookies are cleared all the same, so
+    "log out" always leaves the browser signed out.
+    """
+
     reason = RevocationReason.LOGOUT
 
     def post(self, request: Any) -> Response:
-        family_id = request.auth.get("sid") if request.auth else None
-        if family_id:
-            self.rotation.store.revoke_family(family_id, self.reason)
-        response = Response({"detail": "Signed out."})
-        self.transport.clear(response)
-        return response
+        try:
+            raw = self.read_refresh_credential(request)
+        except CSRFFailed:
+            return self.csrf_failure()
+        except TransportError:
+            return self.signed_out("Signed out.")
+        with suppress(SignetError):
+            self.rotation.revoke(raw, self.reason)
+        return self.signed_out("Signed out.")
 
 
-class LogoutAllView(SignetViewMixin, APIView):
-    authentication_classes = (CookieJWTAuthentication,)
-    permission_classes = (IsAuthenticated,)
+class LogoutAllView(RefreshCredentialView):
+    """Revoke every session of the refresh credential's user.
+
+    Unlike logout this needs a credential from a live session (see
+    ``RotationPolicy.revoke_all``); without one it answers 401, and clears
+    the cookies either way.
+    """
+
     reason = RevocationReason.LOGOUT_ALL
 
     def post(self, request: Any) -> Response:
         try:
-            self.rotation.store.revoke_all_for_user(request.user, self.reason)
+            raw = self.read_refresh_credential(request)
+            self.rotation.revoke_all(raw, self.reason)
+        except CSRFFailed:
+            return self.csrf_failure()
+        except SignetError:
+            return self.failure()
         except NotImplementedError:
             # A cache-backed store cannot enumerate a user's families. Say so
             # plainly rather than surfacing a 500 for a documented limitation.
@@ -218,6 +265,4 @@ class LogoutAllView(SignetViewMixin, APIView):
                 },
                 status=status.HTTP_501_NOT_IMPLEMENTED,
             )
-        response = Response({"detail": "Signed out everywhere."})
-        self.transport.clear(response)
-        return response
+        return self.signed_out("Signed out everywhere.")

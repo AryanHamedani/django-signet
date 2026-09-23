@@ -36,6 +36,7 @@ from django.core.checks import CheckMessage, Error
 from django.core.checks import Warning as CheckWarning
 from django.core.exceptions import ImproperlyConfigured
 
+from django_signet.conf import DEFAULTS
 from django_signet.sessions.stores.factory import get_store
 
 
@@ -84,7 +85,7 @@ def check_signet_setting_shape(app_configs: Any, **kwargs: Any) -> list[CheckMes
 # to _as_str()'s silent fallback: a wrong-typed path does not degrade to
 # the default - it is written straight into the cookie's ``Path`` attribute
 # (e.g. ``Path=42`` for an int), which every browser silently declines to
-# match against the real refresh endpoint. That is the same silently-dropped-
+# match against the real auth endpoints. That is the same silently-dropped-
 # cookie failure signet.E002 exists to catch, reached through a different
 # attribute, so a wrong type here must be just as loud.
 _REQUIRES_STR: tuple[str, ...] = ("ALGORITHM", "COOKIE_REFRESH_PATH")
@@ -151,7 +152,7 @@ def check_cookie_prefix(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
     if not name.startswith("__Host-"):
         return []
 
-    path = _as_str(cfg.get("COOKIE_REFRESH_PATH"), "/api/auth/refresh")
+    path = _as_str(cfg.get("COOKIE_REFRESH_PATH"), DEFAULTS["COOKIE_REFRESH_PATH"])
     domain = cfg.get("COOKIE_DOMAIN")
     problems = []
     if path != "/":
