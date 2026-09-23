@@ -198,6 +198,21 @@ def test_none_csrf_name_is_quiet():
     assert check_setting_types(None) == []
 
 
+@override_settings(SIGNET={"COOKIE_REFRESH_PATH": 42})
+def test_non_string_refresh_path_is_an_error():
+    """Unlike the cookie-name settings, COOKIE_REFRESH_PATH has no None
+    sentinel - a wrong-typed value here is written straight into the
+    cookie's Path attribute (Path=42), which every browser silently
+    declines to match, rather than falling back to a working default."""
+    ids = [e.id for e in check_setting_types(None)]
+    assert "signet.E006" in ids
+
+
+@override_settings(SIGNET={"COOKIE_REFRESH_PATH": "/api/auth/refresh"})
+def test_string_refresh_path_is_quiet():
+    assert check_setting_types(None) == []
+
+
 @override_settings(SIGNET={"ALGORITHM": 123, "COOKIE_REFRESH_NAME": 999})
 def test_multiple_wrong_typed_settings_each_reported():
     """Both problems are reported - one E006 finding doesn't swallow the

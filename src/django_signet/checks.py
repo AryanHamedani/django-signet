@@ -74,10 +74,17 @@ def check_signet_setting_shape(app_configs: Any, **kwargs: Any) -> list[CheckMes
 # Settings every other check dereferences as a string: a wrong type here
 # either crashes the dereferencing check (guarded elsewhere by _as_str) or -
 # worse - is silently tolerated and reaches an API that fails later, at
-# request time, with no system check ever having said a word. ALGORITHM has
-# no legitimate non-str value; the three cookie-name settings legitimately
-# accept None ("derive the name from COOKIE_PREFIX").
-_REQUIRES_STR: tuple[str, ...] = ("ALGORITHM",)
+# request time, with no system check ever having said a word. ALGORITHM and
+# COOKIE_REFRESH_PATH have no legitimate non-str value; the three
+# cookie-name settings legitimately accept None ("derive the name from
+# COOKIE_PREFIX"). COOKIE_REFRESH_PATH belongs here rather than being left
+# to _as_str()'s silent fallback: a wrong-typed path does not degrade to
+# the default - it is written straight into the cookie's ``Path`` attribute
+# (e.g. ``Path=42`` for an int), which every browser silently declines to
+# match against the real refresh endpoint. That is the same silently-dropped-
+# cookie failure signet.E002 exists to catch, reached through a different
+# attribute, so a wrong type here must be just as loud.
+_REQUIRES_STR: tuple[str, ...] = ("ALGORITHM", "COOKIE_REFRESH_PATH")
 _REQUIRES_STR_OR_NONE: tuple[str, ...] = (
     "COOKIE_REFRESH_NAME",
     "COOKIE_ACCESS_NAME",
