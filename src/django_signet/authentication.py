@@ -51,8 +51,8 @@ class BaseJWTAuthentication(BaseAuthentication):
     2. One failure message. Every other ``SignetError`` - a bad signature,
        an expired or revoked token, a failed CSRF check, an inactive user -
        collapses to the same ``AuthenticationFailed(GENERIC_FAILURE)``. The
-       distinct exception types exist for ``on_authentication_failed`` and
-       the signal layer, never for the client.
+       distinct exception types exist for ``on_authentication_failed``,
+       never for the client. No signal is sent on a failure.
     """
 
     transport: Transport = CookieTransport()
@@ -137,9 +137,12 @@ class BaseJWTAuthentication(BaseAuthentication):
         response as every other failure here."""
 
     def on_authentication_failed(self, exc: SignetError) -> None:
-        """Observability hook: log, alert, fire a signal. Whatever this
-        does, the client still receives ``GENERIC_FAILURE`` regardless -
-        this hook can react to the failure, never change the response."""
+        """Observability hook: log, alert, fire a signal of your own - the
+        library sends none on a failure. Called with the ``SignetError``
+        before ``AuthenticationFailed(GENERIC_FAILURE)`` is raised; when
+        the hook returns normally the client receives that generic failure
+        whatever the cause. An exception the hook raises propagates in its
+        place."""
 
     # ------------------------------------------------------------- internals
 

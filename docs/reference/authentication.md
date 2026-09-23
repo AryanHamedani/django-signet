@@ -1,18 +1,22 @@
 # Authentication classes
 
-Six DRF authentication classes, all built from one template method. Source:
+Six concrete DRF authentication classes, plus the `BaseJWTAuthentication`
+base they share, all built from one template method. Source:
 `src/django_signet/authentication.py`.
 
 `BaseJWTAuthentication.authenticate()` owns a fixed sequence - extract,
 verify, (maybe) CSRF, (maybe) family liveness, application claims, user
-lookup - and every failure inside it collapses to the same
+lookup. A request that carries no credential for the class's transport
+gets `None`, so DRF can try the next authenticator. Every `SignetError`
+after that collapses to the same
 `AuthenticationFailed("Invalid or expired credentials.")`, regardless of
 cause. The distinct exception types (`TokenExpired`, `TokenRevoked`,
-`CSRFFailed`, ...) exist for `on_authentication_failed` and the signal
-layer, never for the client, so a response can never be used to enumerate
-*why* a credential failed.
+`CSRFFailed`, ...) reach only the `on_authentication_failed` hook, never
+the client, so a response can never be used to enumerate *why* a
+credential failed. No signal is sent on an authentication failure;
+override `on_authentication_failed` to react to one.
 
-The five concrete classes differ on exactly two axes:
+The six concrete classes differ on exactly two axes:
 
 - **Transport** - which of `HeaderTransport`, `CookieTransport` or
   `HybridTransport` supplies the token (see {doc}`transport`).

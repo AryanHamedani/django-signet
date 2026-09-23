@@ -112,11 +112,11 @@ class SignetViewMixin:
         whether the credential itself is still good, so it must survive.
         403, not 401: this is a distinct, intentionally-observable signal
         from "no valid credential" - REST convention for "you're allowed to
-        be here, but this specific safety check failed" - and every
-        response body in this library already collapses to the same
-        ``GENERIC_FAILURE`` string regardless of cause, so the status code
-        alone carries no more information than "an authenticated write was
-        blocked", not which check blocked it.
+        be here, but this specific safety check failed" - and both failure
+        responses these views write, this one and :meth:`failure`, carry
+        the same ``GENERIC_FAILURE`` body, so the status code alone carries
+        no more information than "an authenticated write was blocked", not
+        which check blocked it.
         """
         return Response({"detail": GENERIC_FAILURE}, status=status.HTTP_403_FORBIDDEN)
 
@@ -238,10 +238,10 @@ class TokenRefreshView(RefreshCredentialView):
     """Redeem the refresh credential for a fresh pair.
 
     A failed CSRF check answers 403 without touching the token; an absent
-    or otherwise invalid one (expired, revoked, reused) answers the same
-    generic 401 ``failure()`` every other endpoint uses, so a client
-    cannot distinguish "no session" from "session denied" by response
-    body alone.
+    or otherwise invalid one (expired, revoked, reused) answers the generic
+    401 ``failure()``, as logout-all does, so a client cannot distinguish
+    "no session" from "session denied" by response body alone. (Logout
+    answers differently: see :class:`LogoutView`.)
     """
 
     def post(self, request: Any) -> Response:
@@ -276,9 +276,17 @@ class TokenRefreshView(RefreshCredentialView):
 class TokenVerifyView(SignetViewMixin, APIView):
     """Confirm the access credential this realm issued is still valid.
 
-    Authenticates through the realm's own authentication class - see
-    ``get_authenticators`` - rather than a project-wide DRF setting, so
-    verify always checks the same transport and strictness login used.
+    Authenticates through ``authentication_classes``, bound to the realm's
+    own transport - see ``get_authenticators`` - rather than a project-wide
+    DRF setting, so verify reads exactly the credential login issued.
+
+    Not strict by default: ``BaseJWTAuthentication`` checks the access
+    token's signature and expiry, not the session. After logout, verify
+    still answers 200 for the old access token until it expires. To make
+    it a liveness check, list a ``Strict*`` class::
+
+        class StrictTokenVerifyView(TokenVerifyView):
+            authentication_classes = (StrictCookieJWTAuthentication,)
     """
 
     authentication_classes: tuple[type[BaseAuthentication], ...] = (
@@ -309,15 +317,17 @@ class TokenVerifyView(SignetViewMixin, APIView):
 class LogoutView(RefreshCredentialView):
     """Revoke the session the refresh credential names.
 
-    Idempotent for a browser: with no credential, or one that no longer
-    verifies, there is nothing to revoke and the answer is still success.
-    A realm whose transport sets no cookies answers the generic 401 to a
-    request with no credential instead: a header client has no cookies to
-    clear, so a logout that presented nothing must not be reported as a
-    sign-out. Cookies are
-    cleared whenever a credential was presented (and passed CSRF), so
-    "log out" leaves the browser signed out; with none presented there is
-    nothing to clear (see ``clear_cookies``).
+    Idempotent for a browser: with no credential, or a cookie credential
+    that does not redeem, the answer is still 200 "Signed out." (a
+    consumed token replayed here is still handled as reuse, exactly as at
+    refresh - see ``RotationPolicy.revoke``). A realm whose transport sets
+    no cookies answers the generic 401 instead - to no credential, or to
+    one that does not redeem, including a replay that burns its family as
+    reuse: a header client has no cookies to clear, so it must not be told
+    it signed out. A failed CSRF check answers 403. Cookies are cleared
+    whenever a credential was presented (and passed CSRF), so "log out"
+    leaves the browser signed out; with none presented there is nothing to
+    clear (see ``clear_cookies``).
     """
 
     reason = RevocationReason.LOGOUT
@@ -349,7 +359,9 @@ class LogoutAllView(RefreshCredentialView):
     Unlike logout this needs a refresh token that redeems (see
     ``RotationPolicy.revoke_all``); without one it answers 401 - clearing
     the cookies only if a credential was presented (see
-    ``clear_cookies``).
+    ``clear_cookies``). A failed CSRF check answers 403, and a store that
+    cannot revoke by user answers 501 once the token verifies, before the
+    token is consumed.
     """
 
     reason = RevocationReason.LOGOUT_ALL

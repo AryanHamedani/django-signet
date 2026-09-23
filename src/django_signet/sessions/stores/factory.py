@@ -75,6 +75,12 @@ class ConfiguredStore:
     literal assigned on a subclass (``store = CacheTokenStore()``) shadows
     this descriptor through normal attribute lookup and wins outright;
     otherwise the ``SIGNET`` setting decides.
+
+    Shadowing it is not a supported way to choose a store. Password-change
+    revocation, ``manage.py signet_purge`` and system checks signet.W007
+    and signet.E010 call :func:`get_store` directly and cannot be pinned,
+    so a store pinned on one class splits sessions across two stores.
+    ``SIGNET["STORE"]`` is the one supported way to choose it.
     """
 
     def __get__(self, obj: object, owner: type | None = None) -> TokenStore:

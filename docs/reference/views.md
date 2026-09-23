@@ -21,7 +21,41 @@ its path segment), in the `django_signet` namespace by default:
 `refresh`, `logout` and `logout-all` all act on the *refresh* credential,
 not the access token - see `RefreshCredentialView`. That is also why they
 need no `IsAuthenticated` permission of their own: presenting a valid
-refresh credential *is* the authentication for these three.
+refresh credential *is* the authentication for these three. Their status
+codes for a failed CSRF check and a bad credential differ on purpose;
+see {doc}`exceptions`.
+
+## Making verify a liveness check
+
+`TokenVerifyView` is not strict by default. Its `BaseJWTAuthentication`
+checks the access token's signature and expiry, not whether the session
+is still live, so after logout it keeps answering 200 for the old access
+token until that token expires. To have it confirm the session too, list
+a `Strict*` class in `authentication_classes`:
+
+```python
+from django.urls import include, path
+
+from django_signet.authentication import StrictCookieJWTAuthentication
+from django_signet.views import TokenVerifyView
+
+
+class StrictTokenVerifyView(TokenVerifyView):
+    authentication_classes = (StrictCookieJWTAuthentication,)
+
+
+urlpatterns = [
+    # Before the include, so it answers api/auth/verify instead.
+    path("api/auth/verify", StrictTokenVerifyView.as_view()),
+    path("api/auth/", include("django_signet.urls")),
+]
+```
+
+`get_authenticators` binds every Signet class listed there to the view's
+own transport, so the class chooses only the strictness: under a header
+or hybrid realm, `StrictCookieJWTAuthentication` still reads the realm's
+credential. Set it on a `TokenVerifyView` subclass, not on a realm: a
+realm's attributes apply to all five endpoints.
 
 ## Realms: `signet_urls`
 

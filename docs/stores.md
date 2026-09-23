@@ -33,10 +33,13 @@ passed to its constructor as keyword arguments. A path, not an instance,
 because `settings.py` cannot import a module that imports models.
 `manage.py check` reports `signet.E010` if the store cannot be built.
 
-A subclass can still pin its own store - `store = CacheTokenStore()` on a
-`RotationPolicy` or authentication subclass wins over the setting - but
-then every component that must agree with it has to be pinned the same
-way. Prefer the setting.
+The setting is the only supported way to choose a store. Assigning one
+on a class instead - `store = CacheTokenStore()` on a `RotationPolicy` or
+authentication subclass - does shadow the setting for that class, but
+password-change revocation, `manage.py signet_purge` and the system checks
+call `get_store()` directly and cannot be pinned. Sessions then live in
+two stores that disagree: a password change revokes nothing in the
+pinned one, and the checks inspect the other.
 
 ## Why `revoke_all_for_user` is not supported
 
@@ -57,7 +60,8 @@ What that means in practice, under `CacheTokenStore`:
   store limitation must not break every password change - and a warning is
   logged from `django_signet.revocation`, but existing sessions stay live
   until they expire or are logged out individually.
-- **`POST logout-all` returns `501 Not Implemented`.**
+- **`POST logout-all` returns `501 Not Implemented`** to a request whose
+  refresh token verifies (without one it answers `401`, as under any store).
 
 `manage.py check` reports both as warning `signet.W007` at startup.
 

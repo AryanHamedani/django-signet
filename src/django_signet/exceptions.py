@@ -1,8 +1,13 @@
 class SignetError(Exception):
     """Base for every internal Signet failure.
 
-    These never reach the client. The DRF surface catches them and raises a
-    generic ``AuthenticationFailed`` so no response discloses which check failed.
+    None reaches the client as itself. The authentication classes turn
+    every one into the same generic ``AuthenticationFailed``, so an
+    authenticated request's response never discloses which check failed.
+    The refresh, logout and logout-all views answer with status codes of
+    their own instead: 403 for ``CSRFFailed`` and the generic 401 for a bad
+    credential, except that logout answers 200 for a cookie credential it
+    cannot revoke (see ``LogoutView``).
     """
 
 
