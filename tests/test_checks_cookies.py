@@ -3,7 +3,7 @@
 import pytest
 from django.test import override_settings
 
-from django_signet.checks import check_cookie_prefix
+from django_signet.checks import check_cookie_prefix, check_cookie_samesite
 
 
 @pytest.mark.parametrize(
@@ -146,3 +146,32 @@ def test_every_violated_requirement_is_reported_separately():
 def test_explicit_names_that_keep_their_prefix_contract_are_quiet(settings, overrides):
     settings.SIGNET = overrides
     assert check_cookie_prefix(None) == []
+
+
+# ------------------------------------------ signet.W012: SameSite=None + !Secure
+
+
+@pytest.mark.parametrize("samesite", ["None", "none", "NONE"])
+def test_samesite_none_without_secure_warns(settings, samesite):
+    """Browsers drop a SameSite=None cookie that is not Secure, silently.
+    Matched case-insensitively, as browsers read the attribute."""
+    settings.SIGNET = {"COOKIE_SAMESITE": samesite, "COOKIE_SECURE": False}
+    messages = check_cookie_samesite(None)
+
+    assert [m.id for m in messages] == ["signet.W012"]
+    assert not messages[0].is_serious()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"COOKIE_SAMESITE": "None"},  # Secure by default
+        {"COOKIE_SAMESITE": "None", "COOKIE_SECURE": True},
+        {"COOKIE_SAMESITE": "Lax", "COOKIE_SECURE": False},
+        {"COOKIE_SECURE": False},  # Lax by default
+        {"COOKIE_SAMESITE": None, "COOKIE_SECURE": False},  # wrong type: quiet
+    ],
+)
+def test_samesite_none_with_secure_or_another_samesite_is_quiet(settings, overrides):
+    settings.SIGNET = overrides
+    assert check_cookie_samesite(None) == []
