@@ -18,7 +18,7 @@ citations.
 | httpOnly cookie transport | not built in — tokens are returned in the response body; you write the cookie code yourself | built in, with correct `__Host-`/`__Secure-` prefixes |
 | Refresh rotation | opt-in (`ROTATE_REFRESH_TOKENS`) | always on |
 | **Refresh reuse/theft detection** | no — `BLACKLIST_AFTER_ROTATION` blacklists the *old* token but does not treat a repeat presentation as a signal to revoke anything else | yes — replaying a consumed token burns the whole token family (RFC 9700 / BCP 240) |
-| Access-token revocation | not possible — access tokens are only checked against the blacklist at refresh time, never on their own | opt-in per view via `Strict*` authentication classes |
+| Access-token revocation | not possible — access tokens are never checked against the blacklist at all; only the refresh token is, and only when it is redeemed | opt-in per view via `Strict*` authentication classes |
 | Refresh tokens at rest | `OutstandingToken.token` stores the **raw JWT as plaintext** (`models.TextField()`) | sha256 digest only; the raw token is never persisted |
 | Whitelist and blacklist | blacklist only (`token_blacklist` app) | one `TokenStore` port, either mode |
 | Storage backend | ORM only | ORM or cache, behind the same interface |
@@ -95,13 +95,51 @@ Everything is a class you subclass, and DRF resolves authentication per view,
 so several auth behaviours coexist in one project:
 
 ```python
+# One shared policy, reused by the authentication class and the views that
+# issue cookies - a custom prefix and a custom refresh path both have to
+# agree everywhere, or the browser silently withholds one of the cookies.
+STAFF_COOKIES = CookiePolicy(
+    prefix="adm",
+    samesite="Strict",
+    # The refresh cookie is path-scoped (see CookiePolicy's docstring). If
+    # the staff endpoints below live under a different URL prefix than the
+    # library default ("/api/auth/refresh"), this must match wherever
+    # StaffRefreshView is actually mounted, or a real browser will never
+    # send the refresh cookie to it.
+    refresh_path="/api/auth/staff/refresh",
+)
+
+
 class StaffAuth(StrictCookieJWTAuthentication):  # instant revocation
-    transport = CookieTransport(CookiePolicy(prefix="adm", samesite="Strict"))
+    transport = CookieTransport(STAFF_COOKIES)
+
+
+class StaffLoginView(TokenObtainView):
+    """Issues the adm-prefixed cookies StaffAuth expects."""
+
+    transport = CookieTransport(STAFF_COOKIES)
+
+
+class StaffRefreshView(TokenRefreshView):
+    transport = CookieTransport(STAFF_COOKIES)
 
 
 class PaymentViewSet(ModelViewSet):
     authentication_classes = [StaffAuth]
+
+
+urlpatterns = [
+    path("api/auth/staff/login", StaffLoginView.as_view()),
+    path("api/auth/staff/refresh", StaffRefreshView.as_view()),
+    path("api/payments/", PaymentViewSet.as_view({"get": "list"})),
+]
 ```
+
+`StaffAuth` alone only verifies cookies - something has to issue `adm-`-prefixed
+cookies in the first place, or every request under `PaymentViewSet` gets a
+silent 401. `StaffLoginView` and `StaffRefreshView` are that something: plain
+subclasses of the same views the default `django_signet.urls` wires up,
+pointed at the same `CookiePolicy` `StaffAuth` verifies against.
 
 Token lifetime is a property of the token class a view mints, not of the
 authentication class that later verifies it — so a shorter-lived access

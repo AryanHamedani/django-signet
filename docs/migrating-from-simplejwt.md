@@ -14,12 +14,31 @@ Signet does not read `SIMPLE_JWT`. Map settings across explicitly.
 
 ## Cutover
 
-Existing Simple JWT tokens are not portable: Signet requires a `sid` claim
-naming a token family that does not exist for them. Run both authentication
-classes during the transition:
+Existing Simple JWT tokens are not portable, and the reason is a claim-schema
+mismatch, not a missing session id. Simple JWT's defaults are
+`USER_ID_CLAIM = "user_id"` and `TOKEN_TYPE_CLAIM = "token_type"`; Signet's
+`Token.verify()` (`src/django_signet/tokens/base.py`) requires `typ` and
+`sub` instead, and checks `typ` first:
 
 ```python
-authentication_classes = [CookieJWTAuthentication, LegacySimpleJWTAuthentication]
+def verify(self, raw: str) -> dict[str, Any]:
+    claims = self.get_backend().verify(...)
+    if claims.get("typ") != self.typ:
+        raise TokenInvalid(f"expected typ={self.typ!r}, got {claims.get('typ')!r}")
+    if "sub" not in claims or "jti" not in claims:
+        raise TokenInvalid("token is missing required claims")
+    return claims
+```
+
+A stock Simple JWT token has no `typ` claim at all (it has `token_type`), so
+`claims.get("typ")` is `None` and the very first check fails immediately —
+long before `sub`, `jti`, or any `sid`/family concept is ever considered.
+Run both authentication classes during the transition:
+
+```python
+from rest_framework_simplejwt.authentication import JWTAuthentication
+
+authentication_classes = [CookieJWTAuthentication, JWTAuthentication]
 ```
 
 DRF tries each in order, so old tokens keep working until they expire while
