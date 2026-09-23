@@ -47,9 +47,6 @@ class setting:
         self.name = name
         self.default = default
 
-    def __set_name__(self, owner: type, attr: str) -> None:
-        self.attr = attr
-
     def __get__(self, obj: Any, owner: type | None = None) -> Any:
         overrides = getattr(django_settings, "SIGNET", {}) or {}
         if self.name in overrides:
