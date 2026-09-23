@@ -86,7 +86,7 @@ header.
 
 `/api/mobile/auth/logout-all` takes the refresh token the same way and
 revokes every session of the user. It needs a token store that can revoke
-by user; see {doc}`../stores`.
+by user; see {doc}`choosing-a-store`.
 
 ## Handle a 401
 

@@ -10,7 +10,7 @@ JavaScript.
 
 `djangorestframework-simplejwt` ("Simple JWT") is the incumbent. Every claim
 below is checkable against its own docs or source — see
-[`docs/migrating-from-simplejwt.md`](docs/migrating-from-simplejwt.md) for
+[`docs/howto/migrating-from-simplejwt.md`](docs/howto/migrating-from-simplejwt.md) for
 citations.
 
 | | Simple JWT | Signet |
@@ -323,7 +323,7 @@ trade-offs earns distrust the first time someone finds one on their own.
   sessions** (it is saved, and a warning is logged). `manage.py check`
   warns about this (`signet.W007`). Both need `ORMTokenStore`, the default,
   or your own application-level index of family ids per user. Details in
-  [`docs/stores.md`](docs/stores.md).
+  [`docs/howto/choosing-a-store.md`](docs/howto/choosing-a-store.md).
 - **Non-strict access tokens survive revocation until they expire.** The
   default authentication classes (`CookieJWTAuthentication`,
   `HeaderJWTAuthentication`, `HybridJWTAuthentication`) verify access tokens

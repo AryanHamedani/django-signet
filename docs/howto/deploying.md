@@ -108,7 +108,7 @@ who can read that cache.
 ## Purge expired sessions
 
 Nothing removes expired sessions from the default ORM store on its own. Run
-[`signet_purge`](../reference/commands.md) on a schedule.
+[`signet_purge`](../reference/commands.md) on a schedule; see {doc}`purging`.
 
 ## Pin the version
 
