@@ -157,15 +157,17 @@ class RotationPolicy:
         issued, so it must be derived from trusted server-side state - the
         user object it is handed - never forwarded from the request body.
         Re-deriving it here, at rotation time, is what keeps custom claims
-        alive across refreshes and current with the user's state.
+        alive across refreshes and current with the user's state. It runs
+        *before* the token is consumed: a hook that raises (a transient
+        database error) must leave the token redeemable, or the client's
+        retry would be indistinguishable from theft.
         """
         claims = self.refresh_token_class().verify(raw_refresh)
         user = self._active_user(claims)
+        extra = get_claims(user) if get_claims is not None else None
         digest = token_digest(raw_refresh)
         result = self.store.consume(digest)
-        return self._handle_consume_result(
-            result, digest, user=user, get_claims=get_claims
-        )
+        return self._handle_consume_result(result, digest, user=user, extra=extra)
 
     def get_user(self, claims: dict[str, Any]) -> Any:
         """Hook: resolve a verified refresh token's subject to a user who
@@ -287,13 +289,12 @@ class RotationPolicy:
         digest: str,
         *,
         user: Any,
-        get_claims: Callable[[Any], dict[str, Any]] | None,
+        extra: dict[str, Any] | None,
     ) -> SessionPair:
         replayed = self._settle(result, digest)
         if replayed is not None:
             return replayed
 
-        extra = get_claims(user) if get_claims is not None else None
         pair = self._mint_into(result.family, subject=str(user.pk), extra=extra)
         self._grace_put(digest, pair)
         return pair
