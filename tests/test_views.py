@@ -1,0 +1,146 @@
+import pytest
+from django.urls import reverse
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
+
+from django_signet.csrf import CSRF_HEADER
+from django_signet.models import RevocationReason, TokenFamily
+from django_signet.sessions.rotation import RotationPolicy
+from django_signet.sessions.stores.cache import CacheTokenStore
+from django_signet.transport.cookie import CookiePolicy
+from django_signet.views import LogoutAllView
+
+pytestmark = pytest.mark.django_db
+POLICY = CookiePolicy()
+PASSWORD = "correct-horse-battery-staple"
+
+
+@pytest.fixture
+def account(db):
+    from django.contrib.auth import get_user_model
+
+    return get_user_model().objects.create_user(username="bob", password=PASSWORD)
+
+
+@pytest.fixture
+def client():
+    return APIClient()
+
+
+def _login(client, username="bob", password=PASSWORD):
+    return client.post(
+        reverse("django_signet:login"),
+        {"username": username, "password": password},
+        format="json",
+    )
+
+
+def test_login_sets_cookies_and_leaks_no_tokens(client, account):
+    response = _login(client)
+    assert response.status_code == 200
+    assert POLICY.access_name in response.cookies
+    assert POLICY.refresh_name in response.cookies
+    assert POLICY.csrf_name in response.cookies
+    body = str(response.data)
+    assert "eyJ" not in body  # no JWT anywhere in the response body
+
+
+def test_login_with_bad_credentials_is_rejected(client, account):
+    assert _login(client, password="wrong").status_code == 400
+
+
+def test_unknown_username_and_wrong_password_are_indistinguishable(client, account):
+    """A weaker test would only check that both are 400 - which a broken
+    implementation that used two different messages (e.g. "no such user"
+    vs. "wrong password") would still pass, defeating the anti-enumeration
+    guarantee. Compare the bodies for equality, not just the status code."""
+    unknown_user = _login(client, username="not-a-real-user", password="whatever")
+    wrong_password = _login(client, password="wrong")
+    assert unknown_user.status_code == wrong_password.status_code == 400
+    assert unknown_user.data == wrong_password.data
+
+
+def test_refresh_rotates_the_cookies(client, account):
+    _login(client)
+    before = client.cookies[POLICY.refresh_name].value
+    response = client.post(reverse("django_signet:refresh"))
+    assert response.status_code == 200
+    assert client.cookies[POLICY.refresh_name].value != before
+
+
+def test_refresh_without_a_cookie_is_401(client):
+    assert client.post(reverse("django_signet:refresh")).status_code == 401
+
+
+def test_a_failed_refresh_clears_the_cookies(client, account):
+    """A dead session must not loop: clear the cookies on the way out.
+
+    Checking status_code == 401 alone would pass a broken implementation
+    that never cleared anything. Checking max-age == 0 alone would still
+    pass one that cleared the right names at the wrong path - which the
+    browser silently ignores for a __Host--prefixed cookie, or which
+    simply never matches for the path-scoped refresh cookie - so the
+    "clear" would be a no-op in a real browser despite looking correct
+    here. Assert both the max-age and the path together.
+    """
+    _login(client)
+    client.cookies[POLICY.refresh_name] = "not-a-real-token"
+    response = client.post(reverse("django_signet:refresh"))
+    assert response.status_code == 401
+    assert response.cookies[POLICY.access_name]["max-age"] == 0
+    assert response.cookies[POLICY.access_name]["path"] == "/"
+    assert response.cookies[POLICY.refresh_name]["max-age"] == 0
+    assert response.cookies[POLICY.refresh_name]["path"] == POLICY.refresh_path
+
+
+def test_logout_revokes_the_family(client, account):
+    _login(client)
+    response = client.post(
+        reverse("django_signet:logout"),
+        **{CSRF_HEADER: client.cookies[POLICY.csrf_name].value},
+    )
+    assert response.status_code == 200
+    family = TokenFamily.objects.get()
+    assert family.is_live is False
+    assert family.revoked_reason == RevocationReason.LOGOUT
+
+
+def test_logout_all_revokes_every_session(client, account):
+    _login(client)
+    second = APIClient()
+    _login(second)
+    assert TokenFamily.objects.filter(revoked_at__isnull=True).count() == 2
+
+    client.post(
+        reverse("django_signet:logout-all"),
+        **{CSRF_HEADER: client.cookies[POLICY.csrf_name].value},
+    )
+    assert TokenFamily.objects.filter(revoked_at__isnull=True).count() == 0
+
+
+def test_verify_reports_the_session_state(client, account):
+    _login(client)
+    response = client.get(reverse("django_signet:verify"))
+    assert response.status_code == 200
+    assert response.data["authenticated"] is True
+
+
+def test_verify_without_credentials_is_401(client):
+    assert client.get(reverse("django_signet:verify")).status_code == 401
+
+
+def test_logout_all_returns_501_when_the_store_cannot_enumerate(account):
+    """``CacheTokenStore.revoke_all_for_user`` raises ``NotImplementedError``
+    by design - a documented limitation, not a crash. A checked-only-for-
+    200/404 test would miss the difference between a clean 501 and an
+    unhandled 500 leaking a traceback, so assert the exact status."""
+
+    class _CacheBackedRotation(RotationPolicy):
+        store = CacheTokenStore()
+
+    class _CacheBackedLogoutAllView(LogoutAllView):
+        rotation = _CacheBackedRotation()
+
+    request = APIRequestFactory().post("/")
+    force_authenticate(request, user=account)
+    response = _CacheBackedLogoutAllView.as_view()(request)
+    assert response.status_code == 501
