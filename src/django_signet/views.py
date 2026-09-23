@@ -283,8 +283,12 @@ class TokenVerifyView(SignetViewMixin, APIView):
 class LogoutView(RefreshCredentialView):
     """Revoke the session the refresh credential names.
 
-    Idempotent: with no credential, or one that no longer verifies, there
-    is nothing to revoke and the answer is still success. Cookies are
+    Idempotent for a browser: with no credential, or one that no longer
+    verifies, there is nothing to revoke and the answer is still success.
+    A realm whose transport sets no cookies answers the generic 401 to a
+    request with no credential instead: a header client has no cookies to
+    clear, so a logout that presented nothing must not be reported as a
+    sign-out. Cookies are
     cleared whenever a credential was presented (and passed CSRF), so
     "log out" leaves the browser signed out; with none presented there is
     nothing to clear (see ``clear_cookies``).
@@ -298,6 +302,8 @@ class LogoutView(RefreshCredentialView):
         except CSRFFailed:
             return self.csrf_failure()
         except TransportError:
+            if not self.transport.is_ambient:
+                return self.failure()
             return self.signed_out("Signed out.")
         try:
             self.rotation.revoke(raw, self.reason)

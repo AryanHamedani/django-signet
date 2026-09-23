@@ -320,6 +320,24 @@ def test_a_header_logout_with_an_access_token_is_401(account):
     assert TokenFamily.objects.get().is_live is True
 
 
+def test_a_header_logout_with_no_credential_is_401(account):
+    """A header logout that presented nothing answered 200 "Signed out."
+    while the session stayed live - the false report the test above rules
+    out, reached by a client that forgot its Authorization header. Red on
+    revert of the non-ambient branch for a missing credential."""
+    RotationPolicy().open_session(account)
+    response = _HeaderLogoutView.as_view()(APIRequestFactory().post("/"))
+    assert response.status_code == 401
+    assert TokenFamily.objects.get().is_live is True
+
+
+def test_a_cookie_logout_with_no_credential_is_still_200(db):
+    """The browser half stays idempotent: a cookie client that presents
+    nothing is already signed out, so the answer is success."""
+    response = APIClient().post(reverse("django_signet:logout"))
+    assert response.status_code == 200
+
+
 # ------------------------------------------- final review, Group D: I1, I3
 
 ADM_POLICY = CookiePolicy(prefix="adm")
