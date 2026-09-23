@@ -176,34 +176,84 @@ def check_cookie_httponly(app_configs: Any, **kwargs: Any) -> list[CheckMessage]
     ]
 
 
-def check_cookie_prefix(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
-    cfg = _signet()
-    name = _as_str(cfg.get("COOKIE_REFRESH_NAME"), "")
-    if not name.startswith("__Host-"):
-        return []
+# The explicitly nameable cookies, with the path each one is set at. The
+# access and CSRF cookies are always set at "/"; the refresh cookie at
+# COOKIE_REFRESH_PATH (None here, resolved per call).
+_COOKIE_NAME_SETTINGS: tuple[tuple[str, str | None], ...] = (
+    ("COOKIE_ACCESS_NAME", "/"),
+    ("COOKIE_REFRESH_NAME", None),
+    ("COOKIE_CSRF_NAME", "/"),
+)
 
-    path = _as_str(cfg.get("COOKIE_REFRESH_PATH"), DEFAULTS["COOKIE_REFRESH_PATH"])
-    domain = cfg.get("COOKIE_DOMAIN")
-    problems = []
-    if path != "/":
-        problems.append(f"is scoped to path {path!r}")
-    if domain is not None:
-        problems.append(f"sets Domain={domain!r}")
-    if not problems:
-        return []
 
-    return [
-        Error(
-            f"Cookie {name!r} uses the __Host- prefix but "
-            + " and ".join(problems)
-            + ".",
-            hint="__Host- requires Path=/ and no Domain attribute. Browsers "
-            "silently drop the cookie otherwise, so requests arrive "
-            "unauthenticated with no error. Use the __Secure- prefix "
-            "instead.",
-            id="signet.E002",
+def _prefix_violations(name: str, *, secure: bool, path: str, domain: Any) -> list[str]:
+    """The requirements of ``name``'s browser-enforced prefix that a cookie
+    with these attributes breaks, each as a phrase naming the requirement
+    and what the settings do instead."""
+    if name.startswith("__Host-"):
+        prefix = "__Host-"
+    elif name.startswith("__Secure-"):
+        prefix = "__Secure-"
+    else:
+        return []
+    violations = []
+    if not secure:
+        violations.append(
+            f"the {prefix} prefix requires Secure, but COOKIE_SECURE is False"
         )
-    ]
+    if prefix == "__Host-" and path != "/":
+        violations.append(
+            f"the __Host- prefix requires Path=/, but it is set at path {path!r}"
+        )
+    if prefix == "__Host-" and domain is not None:
+        violations.append(
+            "the __Host- prefix requires no Domain, but COOKIE_DOMAIN sets "
+            f"Domain={domain!r}"
+        )
+    return violations
+
+
+def check_cookie_prefix(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
+    """Every explicitly named cookie must keep its prefix's contract.
+
+    Browsers enforce cookie-name prefixes: a ``__Host-`` cookie must be
+    ``Secure``, set at ``Path=/`` and carry no ``Domain``; a ``__Secure-``
+    cookie must be ``Secure``. One that breaks the rule is silently dropped
+    - no error, no log line - so every request arrives unauthenticated.
+
+    Checked for ``COOKIE_ACCESS_NAME``, ``COOKIE_REFRESH_NAME`` and
+    ``COOKIE_CSRF_NAME``: the refresh cookie is set at
+    ``COOKIE_REFRESH_PATH``, the other two always at ``/``. A name left
+    ``None`` is derived by ``CookiePolicy``, which only picks a prefix the
+    cookie's attributes satisfy, so it is never flagged. One message per
+    violated requirement, each naming the setting and the cookie.
+    """
+    cfg = _signet()
+    secure = cfg.get("COOKIE_SECURE", True)
+    domain = cfg.get("COOKIE_DOMAIN")
+    refresh_path = _as_str(
+        cfg.get("COOKIE_REFRESH_PATH"), DEFAULTS["COOKIE_REFRESH_PATH"]
+    )
+    errors: list[CheckMessage] = []
+    for key, fixed_path in _COOKIE_NAME_SETTINGS:
+        name = _as_str(cfg.get(key), "")
+        path = fixed_path if fixed_path is not None else refresh_path
+        for violation in _prefix_violations(
+            name, secure=secure, path=path, domain=domain
+        ):
+            errors.append(
+                Error(
+                    f"SIGNET[{key!r}] = {name!r}: {violation}.",
+                    hint="Browsers silently drop a cookie that breaks its "
+                    "name prefix's rules, so requests arrive unauthenticated "
+                    "with no error. Fix the attribute, or choose a name the "
+                    "cookie can keep: __Secure- for a path-scoped or "
+                    "Domain-scoped cookie, or leave the name unset (None) "
+                    "to have it derived.",
+                    id="signet.E002",
+                )
+            )
+    return errors
 
 
 def check_grace_cache(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:

@@ -62,3 +62,11 @@ design flaw demands it, and every such change is listed here.
   message. Previously only `ImportError` and `TypeError` were converted and
   anything else crashed `manage.py check`. `get_store()` itself still
   raises at runtime.
+- System check `signet.E002` now checks every explicitly configured cookie
+  name - `COOKIE_ACCESS_NAME`, `COOKIE_REFRESH_NAME` and `COOKIE_CSRF_NAME`,
+  not only the refresh cookie's - against the browser-enforced prefix
+  contract: `__Host-` requires `Secure`, `Path=/` and no `Domain`;
+  `__Secure-` requires `Secure`. It now also catches a prefixed name under
+  `COOKIE_SECURE=False`. Each violated requirement is its own message,
+  naming the setting and the cookie. A derived (`None`) name is never
+  flagged.
