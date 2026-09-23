@@ -15,3 +15,6 @@ CACHES = {
 }
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 ROOT_URLCONF = "tests.urls"
+# The live server (tests/docs/test_client_node.py) builds its static-files
+# handler from STATIC_URL when it starts, and fails every request without one.
+STATIC_URL = "static/"

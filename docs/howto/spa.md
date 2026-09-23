@@ -27,7 +27,7 @@ contains both hosts. These are the settings for the API:
 
 ```{literalinclude} ../examples/spa_settings.py
 :language: python
-:start-at: SIGNET
+:start-at: from corsheaders
 ```
 
 [`COOKIE_DOMAIN`](../reference/settings.md#cookie_domain) adds
@@ -73,14 +73,14 @@ documentation describes. Then:
   refuses a credentialed response whose `Access-Control-Allow-Origin` is
   `*`. Do not use `CORS_ALLOW_ALL_ORIGINS` either: with credentials allowed,
   django-cors-headers answers every origin with that origin's own name, so
-  any site could make credentialed calls to your API.
+  any origin could make credentialed calls, including every host under
+  `example.com`, which `SameSite=Lax` does not separate from yours.
 - **`CORS_ALLOW_CREDENTIALS = True`** answers
   `Access-Control-Allow-Credentials: true`. Without it, every cross-origin
   `fetch()` that uses `credentials: "include"` fails its CORS check.
-- **`CORS_ALLOW_HEADERS`** must list `x-csrf-token`, and `content-type` for
-  the JSON login. The example replaces the package's default list. To extend
-  the default instead, use `(*default_headers, "x-csrf-token")`, with
-  `default_headers` imported from `corsheaders.defaults`.
+- **`CORS_ALLOW_HEADERS`** extends the package's default list with
+  `x-csrf-token`. Keep the defaults: they include `content-type`, which the
+  JSON login needs, and `authorization`, which a header realm needs.
 
 ## Why the CSRF header matters more here
 
@@ -125,5 +125,6 @@ For that setup, either:
   `api.example.net`, and follow this guide with `COOKIE_DOMAIN="example.net"`;
   or
 - give the frontend a header realm, as described in
-  {doc}`header-clients`. The tokens are then in your JavaScript, so a script
-  injected into the page can read them.
+  {doc}`header-clients`. The tokens are then in your JavaScript, so any
+  script injected into the page (XSS) can read them, including a refresh
+  token that stays valid for 14 days by default.
