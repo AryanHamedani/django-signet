@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
 from django.utils import timezone
 
 from django_signet.models import IssuedToken, RevocationReason, TokenFamily
-from django_signet.sessions.stores.base import Outcome
+from django_signet.sessions.stores.base import ConsumeResult, Outcome
 from django_signet.sessions.stores.orm import ORMTokenStore
+from django_signet.signals import family_revoked
 
 pytestmark = pytest.mark.django_db
 
@@ -115,16 +116,33 @@ def test_revoke_all_for_user_revokes_every_live_family(store, user):
     assert store.is_live(f2.id) is False
 
 
-def test_revoke_all_for_user_records_the_reason(store, user):
-    """Guards against an implementation that revokes (ends liveness) via
-    some other path - e.g. deleting the families outright, which would
-    also make ``is_live`` false above - instead of calling the model's
-    ``revoke()``, which is required to persist ``revoked_reason`` for
-    audit purposes."""
-    fam = _open(store, user)
-    store.revoke_all_for_user(user, RevocationReason.LOGOUT_ALL)
-    fam.refresh_from_db()
-    assert fam.revoked_reason == RevocationReason.LOGOUT_ALL
+def test_revoke_all_for_user_sends_the_signal_for_every_family(store, user):
+    """A bulk ``TokenFamily.objects.filter(...).update(revoked_at=...,
+    revoked_reason=...)`` - the exact bypass the brief warns against -
+    would set the same field state as calling the model's ``revoke()``,
+    so asserting only ``revoked_reason`` afterwards (as an earlier version
+    of this test did) cannot tell the two apart: both leave every family
+    with the right reason recorded. What a bulk update cannot fake is the
+    ``family_revoked`` signal, which only ``TokenFamily.revoke()`` sends -
+    and only once per family, honouring the first-reason-wins guard.
+    """
+    f1 = _open(store, user, "a" * 64)
+    f2 = _open(store, user, "b" * 64)
+
+    received: list[dict[str, Any]] = []
+
+    def handler(**kwargs: Any) -> None:
+        received.append(kwargs)
+
+    family_revoked.connect(handler, dispatch_uid="test-revoke-all-signal")
+    try:
+        store.revoke_all_for_user(user, RevocationReason.LOGOUT_ALL)
+    finally:
+        family_revoked.disconnect(dispatch_uid="test-revoke-all-signal")
+
+    assert len(received) == 2
+    assert {r["family"].pk for r in received} == {f1.pk, f2.pk}
+    assert all(r["reason"] == RevocationReason.LOGOUT_ALL for r in received)
 
 
 def test_purge_expired_removes_only_expired_families(store, user):
@@ -169,7 +187,12 @@ def test_consume_claim_is_exclusive_under_a_race(store, user, monkeypatch):
     original_claim = ORMTokenStore._claim
     second_outcome: list[Outcome] = []
 
-    def racing_claim(self, token, family, now):  # type: ignore[no-untyped-def]
+    def racing_claim(
+        self: ORMTokenStore,
+        token: IssuedToken,
+        family: TokenFamily,
+        now: datetime,
+    ) -> ConsumeResult:
         # A has already classified (read) and is about to claim (write).
         # Run B's full consume() - its own read, then its own write -
         # before A's write reaches the database.
@@ -186,3 +209,40 @@ def test_consume_claim_is_exclusive_under_a_race(store, user, monkeypatch):
         Outcome.ALREADY_CONSUMED,
     }
     assert IssuedToken.objects.get(digest=digest).consumed_at is not None
+
+
+def test_consume_reports_family_revoked_when_revocation_races_the_claim(
+    store, user, monkeypatch
+):
+    """The revocation TOCTOU this store must not have: classify reads
+    ``family.revoked_at`` once, and the claim step used to only re-check
+    ``consumed_at`` - so a sibling token's reuse burning this family
+    between those two steps would still let this in-flight consume()
+    report LIVE. That is precisely the scenario the whole module exists
+    to prevent: reuse is detected, the family is burned, and a
+    still-in-flight sibling token gets treated as live anyway.
+
+    This forces the family to be revoked in the gap between classify
+    (which observes it live) and claim (whose conditional UPDATE must now
+    re-check revocation, not just consumption, to catch this).
+    """
+    fam = _open(store, user)
+    digest = "a" * 64
+
+    original_claim = ORMTokenStore._claim
+
+    def revoke_then_claim(
+        self: ORMTokenStore,
+        token: IssuedToken,
+        family: TokenFamily,
+        now: datetime,
+    ) -> ConsumeResult:
+        monkeypatch.setattr(ORMTokenStore, "_claim", original_claim)
+        store.revoke_family(fam.id, RevocationReason.REUSE_DETECTED)
+        return original_claim(self, token, family, now)
+
+    monkeypatch.setattr(ORMTokenStore, "_claim", revoke_then_claim)
+    result = store.consume(digest)
+
+    assert result.outcome is Outcome.FAMILY_REVOKED
+    assert IssuedToken.objects.get(digest=digest).consumed_at is None

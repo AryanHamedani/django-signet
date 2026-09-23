@@ -65,18 +65,40 @@ class ORMTokenStore(TokenStore):
         self, token: IssuedToken, family: TokenFamily, now: datetime
     ) -> ConsumeResult:
         """The atomic step: claim the token if, and only if, the database
-        still shows it unconsumed at write time. A zero-row result means
-        another caller's claim won the race - that is ALREADY_CONSUMED,
-        which is what triggers reuse detection upstream."""
+        still shows it unconsumed *and* its family still unrevoked at write
+        time. Both are re-checked in the same conditional UPDATE, not just
+        ``consumed_at`` - otherwise a revocation landing between classify
+        and claim (e.g. a sibling token's reuse burning this family) would
+        still let this token be claimed and reported LIVE, undercutting the
+        instant-revocation guarantee burning a family exists to provide.
+
+        A zero-row result is now ambiguous by construction - already
+        consumed, or the family was just revoked - so it is resolved with
+        one extra read. That only runs on the rare, already-contended
+        path."""
         claimed = IssuedToken.objects.filter(
-            pk=token.pk, consumed_at__isnull=True
+            pk=token.pk,
+            consumed_at__isnull=True,
+            family__revoked_at__isnull=True,
         ).update(consumed_at=now)
         if not claimed:
-            return ConsumeResult(Outcome.ALREADY_CONSUMED, family, token)
+            return self._resolve_claim_conflict(token, family)
 
         token.consumed_at = now
         TokenFamily.objects.filter(pk=family.pk).update(last_used_at=now)
         return ConsumeResult(Outcome.LIVE, family, token)
+
+    def _resolve_claim_conflict(
+        self, token: IssuedToken, family: TokenFamily
+    ) -> ConsumeResult:
+        """Only reached when the conditional UPDATE in ``_claim`` affected
+        zero rows. Re-read the family to tell the two possible causes
+        apart: they trigger different behaviour upstream (FAMILY_REVOKED
+        does not burn the family again; ALREADY_CONSUMED does)."""
+        fresh_family = TokenFamily.objects.get(pk=family.pk)
+        if fresh_family.revoked_at is not None:
+            return ConsumeResult(Outcome.FAMILY_REVOKED, fresh_family, token)
+        return ConsumeResult(Outcome.ALREADY_CONSUMED, fresh_family, token)
 
     def is_live(self, family_id: uuid.UUID) -> bool:
         return TokenFamily.objects.filter(
