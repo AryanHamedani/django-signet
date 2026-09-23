@@ -9,7 +9,11 @@ Every signal is sent through `django_signet.signals.send`, never
 `Signal.send()`, and `send` uses `Signal.send_robust()`:
 
 - A receiver that raises an `Exception` is logged and skipped. The other
-  receivers still run, and the login, refresh, logout or revocation that
+  receivers still run - unless the failing receiver has no `__qualname__`
+  (a callable instance or a `functools.partial`): Django's own failure
+  logging then raises, and the rest of that dispatch is abandoned and
+  logged as a dispatch failure naming only the signal. Connect plain
+  functions or methods. Either way the login, refresh, logout or revocation that
   sent the signal completes as it would with no receiver connected. A
   `BaseException` such as `SystemExit` is not caught, as it is not by any
   `except Exception`.
@@ -20,9 +24,11 @@ Every signal is sent through `django_signet.signals.send`, never
 - A failure of the dispatch itself is caught and logged too.
 - Return values are discarded.
 
-A decision that *should* change the outcome belongs in a hook -
-`RotationPolicy.on_reuse_detected` or
-`BaseJWTAuthentication.on_authentication_failed` - not a receiver.
+A decision that *should* change the outcome belongs in a hook such as
+`BaseJWTAuthentication.on_authentication_failed`, not a receiver.
+`RotationPolicy.on_reuse_detected` is contained like a receiver: its
+exceptions are logged and ignored, because it runs after a reuse burn
+that an escaping exception could roll back (under `ATOMIC_REQUESTS`).
 
 ## Receivers run synchronously
 
@@ -35,7 +41,9 @@ queue.
 ## Logging
 
 Each receiver failure is logged at `error` on the `django_signet.signals`
-logger, naming the signal and the receiver, with the traceback attached.
+logger, naming the signal and the receiver, with the traceback attached
+(for a receiver with no `__qualname__`, see above: one record naming only
+the signal).
 Django also logs the same failure on `django.dispatch`, without the
 signal's name. For a single record per failure, filter out
 `django.dispatch`.

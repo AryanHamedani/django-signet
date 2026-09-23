@@ -178,7 +178,9 @@ class TokenStore(abc.ABC):
         """Revoke one session family, recording ``reason``.
 
         A requirement on every implementation: afterwards
-        :meth:`is_live` must answer ``False`` for ``family_id``, **even for
+        :meth:`is_live` must answer ``False`` for ``family_id``, and
+        :meth:`consume` must report ``FAMILY_REVOKED`` for its tokens,
+        **even for
         a family the store does not hold** (expired, purged, evicted, never
         issued). An allowlist store gets that for free - an unknown family
         is already not live, so ``ORMTokenStore`` does nothing for one. A
