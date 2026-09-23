@@ -38,3 +38,20 @@ def test_creating_a_brand_new_user_does_not_crash_the_receiver():
     new_user.save()
     assert new_user.pk is not None
     assert TokenFamily.objects.filter(user=new_user).count() == 0
+
+
+def test_saving_a_user_with_a_pk_but_no_existing_row_does_not_crash():
+    """``instance.pk`` is set but no row for it exists yet - e.g. a pk
+    explicitly assigned before the first save. ``sender.objects.get(pk=...)``
+    raises ``DoesNotExist`` here (a *different* branch from ``pk is None``),
+    and the receiver's ``except sender.DoesNotExist`` must absorb it rather
+    than letting it propagate and block the save."""
+    from django.contrib.auth import get_user_model
+
+    user_model = get_user_model()
+    ghost = user_model(pk=999_999, username="not-yet-saved")
+    ghost.set_password("initial-password")
+    ghost.save()
+
+    assert user_model.objects.filter(pk=999_999).exists()
+    assert TokenFamily.objects.filter(user=ghost).count() == 0

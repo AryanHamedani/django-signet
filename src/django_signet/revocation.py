@@ -28,6 +28,14 @@ def revoke_on_password_change(sender: Any, instance: Any, **_kwargs: Any) -> Non
     - A save that does not touch the password (e.g. an unrelated profile
       edit) must not revoke anything, or every profile edit would log the
       user out everywhere. Only a genuine hash change triggers revocation.
+
+    Deliberately fail-closed: if ``revoke_all_for_user`` itself raises (a
+    database error, say), that exception propagates out of this ``pre_save``
+    receiver and blocks the password change from being saved at all. That is
+    the right trade-off - refusing the save is safer than letting a password
+    change succeed while silently leaving old sessions live - but it means a
+    transient store failure surfaces as a failed password change rather than
+    a background/logged warning, which is worth knowing going in.
     """
     if instance.pk is None:
         return
