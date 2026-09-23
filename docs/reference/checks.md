@@ -11,7 +11,7 @@ project put in `SIGNET` - the wrong shape entirely, or a field of the
 wrong type - and whatever goes wrong building the configured store, the
 outcome is a reported message, not an unhandled traceback from
 `manage.py check`. `checks._signet()` degrades a non-dict `SIGNET` to
-`{}` for the checks that read it, the two checks that read the raw
+`{}` for the checks that read it, the two other checks that read the raw
 setting (`check_token_store` and `check_refresh_cookie_path`) return
 nothing for a non-dict `SIGNET`, and `checks._as_str()` treats a
 wrong-typed field as absent inside the checks that read it as a string.
@@ -19,9 +19,9 @@ wrong-typed field as absent inside the checks that read it as a string.
 The exceptions are two misconfigurations outside `SIGNET` that Django's
 own checks crash on too: an unimportable `ROOT_URLCONF`
 (`check_refresh_cookie_path` walks the URLconf, as Django's URL checks
-do), and a cache whose `KEY_FUNCTION` cannot be imported
-(`check_grace_cache` builds the grace cache, as Django's cache checks
-do).
+do), and a cache that cannot be built - an unimportable `KEY_FUNCTION`,
+say (`check_grace_cache` builds the grace cache, as Django's own cache
+checks build every cache).
 
 **Checks read the `SIGNET` settings dict - class-level overrides only
 where `signet.E008` needs them.** `signet.E008` also walks the real
@@ -123,7 +123,9 @@ exhaustively introspected. A clean `manage.py check` means the
   read from the view class, so a realm's own `CookiePolicy` is checked,
   not only `COOKIE_REFRESH_PATH`. Skipped for a view whose transport has
   no cookie policy (a header transport), a `refresh_path` that is not a
-  string (`signet.E006` reports that), and a route that needs URL
+  string (`signet.E006` reports it for `SIGNET["COOKIE_REFRESH_PATH"]`;
+  a non-string `refresh_path` set in code is not reported by any check),
+  and a route that needs URL
   arguments (no single reversible URL).
 - **Why it matters:** a browser only sends a cookie to URLs under its
   `Path`. Mounted outside it, refresh, logout and logout-all never

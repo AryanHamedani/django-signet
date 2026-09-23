@@ -61,7 +61,8 @@ What that means in practice, under `CacheTokenStore`:
   logged from `django_signet.revocation`, but existing sessions stay live
   until they expire or are logged out individually.
 - **`POST logout-all` returns `501 Not Implemented`** to a request whose
-  refresh token verifies (without one it answers `401`, as under any store).
+  refresh token verifies and passes CSRF (otherwise `401`, or `403` for a
+  failed CSRF check, as under any store).
 
 `manage.py check` reports both as warning `signet.W007` at startup.
 

@@ -45,8 +45,10 @@ token_refreshed = django.dispatch.Signal()
 #: Sent when a consumed refresh token is presented again - to refresh,
 #: logout or logout-all - and the grace window holds no pair for it, with
 #: ``user``, ``family`` and ``request``. Sent whether or not
-#: ``RotationPolicy.burn_family_on_reuse`` burns the family; when it does,
-#: the family is already revoked by the time receivers run.
+#: ``RotationPolicy.burn_family_on_reuse`` burns the family. When it does,
+#: the store has already revoked the family, but the ``family`` object
+#: passed is the one read before the burn, so its ``revoked_at`` is still
+#: ``None``: ask the store (``is_live()``).
 #: ``request`` is always ``None``: reuse is detected inside
 #: :class:`RotationPolicy <django_signet.sessions.rotation.RotationPolicy>`,
 #: which never sees the HTTP request that triggered it.
@@ -87,7 +89,11 @@ def send(signal: django.dispatch.Signal, sender: Any, **named: Any) -> None:
     """Send ``signal`` to every receiver, isolating each one's failure.
 
     Uses ``Signal.send_robust()``: every receiver is called even if an
-    earlier one raised, and no ``Exception`` a receiver raises reaches the
+    earlier one raised - unless that receiver has no ``__qualname__`` (a
+    callable instance, a ``functools.partial``), when Django's own failure
+    logging raises and the rest of the dispatch is abandoned and logged as
+    a dispatch failure naming only the signal; connect plain functions or
+    methods. No ``Exception`` a receiver raises reaches the
     caller (a ``BaseException`` such as ``SystemExit`` still propagates, as
     it does through any ``except Exception``). Each
     one is logged at ``error`` on the ``django_signet.signals`` logger,
