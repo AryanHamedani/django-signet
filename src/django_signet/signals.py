@@ -15,8 +15,10 @@ marked the enclosing transaction for rollback - so inside a transaction
 the receivers run under a savepoint of their own.
 
 A decision that *should* be able to affect the outcome belongs in a hook
-(``RotationPolicy.on_reuse_detected``,
-``BaseJWTAuthentication.on_authentication_failed``), not a receiver.
+such as ``BaseJWTAuthentication.on_authentication_failed``, not a
+receiver. ``RotationPolicy.on_reuse_detected`` is contained like a
+receiver, for the same reason: it runs after a burn that must not be
+rolled back.
 """
 
 from __future__ import annotations

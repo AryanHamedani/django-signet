@@ -217,15 +217,20 @@ class RotationPolicy:
         self._redeem(raw_refresh, lambda: self.store.revoke_all_for_user(user, reason))
 
     def on_reuse_detected(self, family: Any) -> None:
-        """Hook, called after the family is burned and before ``TokenReused``
+        """Hook, called when reuse is detected - after the family is burned,
+        unless ``burn_family_on_reuse`` is off - and before ``TokenReused``
         is raised.
 
         A no-op by default. Deliberately an *event* hook, not a decision
         point: it reports that an incident happened and hands over the
         blast radius (the family), without requiring the caller to
-        understand how detection worked. Override to alert, log, or force
-        a password reset. Public API - but, like every hook, not frozen
-        until 1.0 (see CONTRIBUTING.md).
+        understand how detection worked. An exception it raises is logged
+        at ``error`` on ``django_signet.sessions.rotation`` and ignored:
+        the burn is written but not necessarily committed yet (under
+        ``ATOMIC_REQUESTS`` it is not), so letting it propagate could roll
+        the burn back and leave a detected theft's session live. Override
+        to alert, log, or force a password reset. Public API - but, like
+        every hook, not frozen until 1.0 (see CONTRIBUTING.md).
         """
 
     # --------------------------------------------------------------- private
@@ -270,7 +275,10 @@ class RotationPolicy:
         false alarm. It is the same window two tabs refreshing at once
         already have, and is not closed here. The non-LIVE outcomes are
         settled after the transaction, so a reuse burn is never rolled
-        back with it.
+        back with it. A transaction the *caller* holds open still covers
+        the burn - ``ATOMIC_REQUESTS``, say - which is why nothing but
+        ``TokenReused`` leaves a burn: the views answer that with a
+        response, so the caller's transaction commits.
         """
         digest = token_digest(raw_refresh)
         with transaction.atomic():
@@ -354,7 +362,20 @@ class RotationPolicy:
             family=family,
             request=None,
         )
-        self.on_reuse_detected(family)
+        # The hook runs after the burn is written but not necessarily
+        # committed: under ATOMIC_REQUESTS, or in a transaction the caller
+        # opened, an exception escaping here would roll the burn back and
+        # leave a detected theft's family live. So, like a signal
+        # receiver's, the hook's exceptions are logged and the replay is
+        # refused with TokenReused all the same.
+        try:
+            self.on_reuse_detected(family)
+        except Exception:
+            logger.exception(
+                "signet: %s.on_reuse_detected raised; the exception was "
+                "logged and ignored, and the replay is still refused",
+                type(self).__qualname__,
+            )
 
     def _cache(self) -> Any | None:
         """The grace cache, or ``None`` if the window is disabled or
