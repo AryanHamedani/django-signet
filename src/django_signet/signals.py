@@ -9,7 +9,10 @@ it completes exactly as it would have with no receiver connected.
 That matters most for ``family_revoked``, which fires inside the
 transaction that consumes a refresh token and revokes its family at
 logout: a receiver exception propagating out of it would roll the
-revocation back and leave the session live.
+revocation back and leave the session live. Swallowing the exception is
+not enough on its own - a receiver whose database write fails has already
+marked the enclosing transaction for rollback - so inside a transaction
+the receivers run under a savepoint of their own.
 
 A decision that *should* be able to affect the outcome belongs in a hook
 (``RotationPolicy.on_reuse_detected``,
@@ -18,10 +21,12 @@ A decision that *should* be able to affect the outcome belongs in a hook
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
 import django.dispatch
+from django.db import transaction
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +63,33 @@ def send(signal: django.dispatch.Signal, sender: Any, **named: Any) -> None:
     attached. (Django also logs it, without the signal's name, on
     ``django.dispatch``.)
 
+    Inside a transaction the receivers run under a savepoint, so a
+    receiver whose database write fails rolls back only the receivers'
+    writes, never the sender's. A failure of the dispatch itself is logged
+    and ignored too: Django's own failure logging raises for a receiver
+    with no ``__qualname__``, such as a callable instance.
+
     Receivers' return values are discarded: nothing a receiver returns or
     raises can change what the sender does next.
     """
     name = _NAMES.get(signal, repr(signal))
-    for receiver, result in signal.send_robust(sender=sender, **named):
+    isolation = (
+        transaction.atomic()
+        if transaction.get_connection().in_atomic_block
+        else contextlib.nullcontext()
+    )
+    try:
+        with isolation:
+            responses = signal.send_robust(sender=sender, **named)
+    except Exception:
+        logger.exception(
+            "signet: dispatching signal %s failed; the exception was logged "
+            "and ignored, and the operation that sent the signal was not "
+            "affected",
+            name,
+        )
+        return
+    for receiver, result in responses:
         if isinstance(result, Exception):
             logger.error(
                 "signet: receiver %s of signal %s raised; the exception was "

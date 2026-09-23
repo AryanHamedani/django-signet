@@ -26,7 +26,9 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from django_signet.csrf import CSRF_HEADER
+from django_signet.exceptions import TokenReused
 from django_signet.models import RevocationReason, TokenFamily
+from django_signet.sessions.rotation import RotationPolicy
 from django_signet.signals import (
     family_revoked,
     token_issued,
@@ -63,13 +65,33 @@ def account(db):
     return get_user_model().objects.create_user(username="bob", password=PASSWORD)
 
 
+def _db_failing_receiver(sender, **kwargs):
+    """An audit-log receiver whose write fails: the username is taken.
+    Django marks the enclosing transaction for rollback before raising."""
+    from django.contrib.auth import get_user_model
+
+    get_user_model().objects.create(username="bob")
+
+
+class _CallableReceiver:
+    """A receiver with no ``__qualname__``: Django's own failure logging
+    raises ``AttributeError`` on it, from inside ``send_robust()``."""
+
+    def __call__(self, sender, **kwargs):
+        raise _AlertingOutageError("the pager is down")
+
+
 @contextlib.contextmanager
-def _raising(signal):
-    signal.connect(_flaky_receiver, dispatch_uid="signet-test-flaky")
+def _connected(signal, receiver):
+    signal.connect(receiver, weak=False, dispatch_uid="signet-test-receiver")
     try:
         yield
     finally:
-        signal.disconnect(dispatch_uid="signet-test-flaky")
+        signal.disconnect(dispatch_uid="signet-test-receiver")
+
+
+def _raising(signal):
+    return _connected(signal, _flaky_receiver)
 
 
 def _client():
@@ -241,3 +263,75 @@ def test_a_raising_receiver_is_logged_with_its_traceback(account, caplog):
     assert record.exc_info is not None
     assert isinstance(record.exc_info[1], _AlertingOutageError)
     assert record.exc_info[2] is not None
+
+
+@pytest.mark.parametrize(
+    ("receiver", "endpoint"),
+    [
+        (_db_failing_receiver, "logout"),
+        (_db_failing_receiver, "logout-all"),
+        (_CallableReceiver(), "logout"),
+    ],
+    ids=["db-error/logout", "db-error/logout-all", "callable/logout"],
+)
+def test_a_receiver_that_breaks_the_dispatch_does_not_undo_a_logout(
+    account, receiver, endpoint
+):
+    """Two receivers ``send_robust()`` alone does not contain. One whose
+    database write fails has already marked ``_redeem``'s transaction for
+    rollback, so swallowing its exception answered 200 "Signed out" while
+    the transaction silently rolled the revocation back. A callable
+    instance makes Django's own failure logging raise, which escaped
+    ``send_robust()``. Either way the session stayed live."""
+    client, _ = _login()
+    _login()
+    refresh, csrf_value = _credentials(client)
+
+    with _connected(family_revoked, receiver):
+        response = _present(endpoint, refresh, csrf_value)
+
+    revoked = TokenFamily.objects.filter(revoked_at__isnull=False).count()
+    assert revoked == (2 if endpoint == "logout-all" else 1)
+    assert _present("refresh", refresh, csrf_value).status_code == 401
+    assert response.status_code == 200
+
+
+class _VetoError(Exception):
+    """What a hook raises to change the outcome - which hooks may do."""
+
+
+def test_the_reuse_hook_still_runs_when_a_receiver_raises(account):
+    """Hooks are decision points and are not routed through the helper: a
+    raising ``token_reuse_detected`` receiver used to skip the hook."""
+    seen = []
+
+    class Watching(RotationPolicy):
+        grace_cache = None
+
+        def on_reuse_detected(self, family):
+            seen.append(family.id)
+
+    policy = Watching()
+    first = policy.open_session(account)
+    policy.rotate(first.refresh.value)
+    with _raising(token_reuse_detected), pytest.raises(TokenReused):
+        policy.rotate(first.refresh.value)
+
+    assert seen == [first.family.id]
+
+
+def test_a_raising_reuse_hook_still_changes_the_outcome(account):
+    """The other half of the contract: unlike a receiver, a hook that
+    raises is not swallowed."""
+
+    class Vetoing(RotationPolicy):
+        grace_cache = None
+
+        def on_reuse_detected(self, family):
+            raise _VetoError
+
+    policy = Vetoing()
+    first = policy.open_session(account)
+    policy.rotate(first.refresh.value)
+    with pytest.raises(_VetoError):
+        policy.rotate(first.refresh.value)

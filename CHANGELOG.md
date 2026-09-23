@@ -54,7 +54,11 @@ design flaw demands it, and every such change is listed here.
   `django_signet.signals` logger. Previously a raising `family_revoked`
   receiver rolled back a logout's revocation (logout answered 500 and the
   session stayed live), and a raising `token_issued` receiver turned a
-  successful login into a 500. Decisions belong in hooks
+  successful login into a 500. Inside a transaction the receivers run
+  under their own savepoint, so a receiver whose database write fails
+  cannot silently roll back the revocation. A failure of the dispatch
+  itself (Django's failure logging raises on a callable-instance receiver)
+  is logged and ignored as well. Decisions belong in hooks
   (`on_reuse_detected`, `on_authentication_failed`), which are unchanged.
 - System check `signet.E010` now reports *any* exception raised while
   building the configured store - a store constructor rejecting its
