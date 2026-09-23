@@ -5,7 +5,7 @@
 **Do not open a public issue for a security vulnerability.**
 
 Report it privately through GitHub Security Advisories:
-<https://github.com/p0s3id0n/django-signet/security/advisories/new>
+<https://github.com/AryanHamedani/django-signet/security/advisories/new>
 
 Please include the affected version, a description of the issue, and
 reproduction steps or a proof of concept if you have one.

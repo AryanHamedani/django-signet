@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         If this is a security vulnerability, stop and report it privately:
-        https://github.com/p0s3id0n/django-signet/security/advisories/new
+        https://github.com/AryanHamedani/django-signet/security/advisories/new
   - type: input
     id: versions
     attributes:

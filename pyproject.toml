@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "p0s3id0n" }]
+authors = [{ name = "Aryan Hamedani" }]
 keywords = ["django", "djangorestframework", "jwt", "authentication", "cookies", "security"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -38,11 +38,11 @@ dependencies = [
 rsa = ["cryptography>=42"]
 
 [project.urls]
-Homepage = "https://github.com/p0s3id0n/django-signet"
-Documentation = "https://github.com/p0s3id0n/django-signet#readme"
-Changelog = "https://github.com/p0s3id0n/django-signet/blob/main/CHANGELOG.md"
-Issues = "https://github.com/p0s3id0n/django-signet/issues"
-Source = "https://github.com/p0s3id0n/django-signet"
+Homepage = "https://github.com/AryanHamedani/django-signet"
+Documentation = "https://github.com/AryanHamedani/django-signet#readme"
+Changelog = "https://github.com/AryanHamedani/django-signet/blob/main/CHANGELOG.md"
+Issues = "https://github.com/AryanHamedani/django-signet/issues"
+Source = "https://github.com/AryanHamedani/django-signet"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/django_signet"]
