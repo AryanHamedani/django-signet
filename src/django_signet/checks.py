@@ -318,6 +318,8 @@ def _refresh_path_error(name: str, view_class: Any) -> CheckMessage | None:
     policy = view_class.transport.cookie_policy
     if policy is None:
         return None  # a header transport sets no cookie to scope
+    if not isinstance(policy.refresh_path, str):
+        return None  # signet.E006 reports the real problem
     try:
         url = reverse(name)
     except NoReverseMatch:
@@ -348,6 +350,8 @@ def check_refresh_cookie_path(app_configs: Any, **kwargs: Any) -> list[CheckMess
     """
     if not getattr(settings, "ROOT_URLCONF", None):
         return []
+    if not isinstance(_raw_signet(), dict | None):
+        return []  # signet.E005 reports the real problem
     found = (
         _refresh_path_error(name, view_class)
         for name, view_class in _named_views(get_resolver())

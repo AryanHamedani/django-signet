@@ -1,3 +1,4 @@
+import pytest
 from django.test import override_settings
 
 from django_signet.checks import (
@@ -5,6 +6,7 @@ from django_signet.checks import (
     check_cookie_prefix,
     check_cookie_security,
     check_grace_cache,
+    check_refresh_cookie_path,
     check_setting_types,
     check_signet_setting_shape,
     check_signing_key,
@@ -106,17 +108,24 @@ def test_signet_not_a_dict_is_an_error():
     assert "signet.E005" in ids
 
 
-@override_settings(SIGNET=["not", "a", "dict"])
-def test_malformed_signet_does_not_crash_the_other_checks():
+@pytest.mark.parametrize("malformed", [["not", "a", "dict"], 42])
+def test_malformed_signet_does_not_crash_the_other_checks(settings, malformed):
     """A non-dict SIGNET must not raise out of any other check - only
     ``check_signet_setting_shape`` names the real problem; every other
-    check degrades to its no-override behaviour instead of crashing."""
+    check degrades to its no-override behaviour instead of crashing.
+
+    Second pass (R2): ``42`` as well as a list, because a list happens to
+    support ``in`` and an int does not - under ``42`` signet.E008 raised
+    ``TypeError`` and took every check after it down, E005 included."""
+    settings.SIGNET = malformed
     assert check_cookie_security(None) == []
     assert check_cookie_httponly(None) == []
     assert check_cookie_prefix(None) == []
     assert check_grace_cache(None) == []
     assert check_signing_key(None) == []
     assert check_setting_types(None) == []
+    assert check_token_store(None) == []
+    assert check_refresh_cookie_path(None) == []
 
 
 # ----------------------------------------------- crash-proofing: wrong types
@@ -209,6 +218,17 @@ def test_non_string_refresh_path_is_an_error():
     declines to match, rather than falling back to a working default."""
     ids = [e.id for e in check_setting_types(None)]
     assert "signet.E006" in ids
+
+
+@pytest.mark.parametrize("path", [42, None])
+def test_non_string_refresh_path_does_not_crash_the_path_check(settings, path):
+    """R2: signet.E008 compared the mounted URL against ``refresh_path``
+    with ``str.startswith``, which raises for a non-string - hiding the
+    E006 that exists to report exactly this setting. It now stands aside
+    and lets E006 speak."""
+    settings.SIGNET = {"COOKIE_REFRESH_PATH": path}
+    assert check_refresh_cookie_path(None) == []
+    assert "signet.E006" in [e.id for e in check_setting_types(None)]
 
 
 @override_settings(SIGNET={"COOKIE_REFRESH_PATH": "/api/auth/refresh"})
