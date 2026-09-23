@@ -7,6 +7,7 @@ from django_signet.checks import (
     check_setting_types,
     check_signet_setting_shape,
     check_signing_key,
+    check_token_store,
 )
 
 
@@ -244,3 +245,28 @@ def test_host_prefix_with_root_path_and_no_domain_is_quiet():
 def test_host_prefix_with_domain_is_an_error_even_at_root_path():
     ids = [e.id for e in check_cookie_prefix(None)]
     assert "signet.E002" in ids
+
+
+# ------------------------------------------- final review, Group B: store
+
+
+def test_the_default_store_is_quiet():
+    assert check_token_store(None) == []
+
+
+@override_settings(
+    SIGNET={"STORE": "django_signet.sessions.stores.cache.CacheTokenStore"}
+)
+def test_a_store_that_cannot_revoke_all_for_a_user_warns():
+    """Warning, not Error: a cache store is a supported, documented
+    configuration - but password-change revocation and logout-all are
+    unavailable under it, and that must be said at startup."""
+    messages = check_token_store(None)
+    assert [m.id for m in messages] == ["signet.W007"]
+    assert "password" in messages[0].msg
+    assert "logout-all" in messages[0].msg
+
+
+@override_settings(SIGNET={"STORE": "no.such.module.Store"})
+def test_an_unusable_store_is_an_error():
+    assert [m.id for m in check_token_store(None)] == ["signet.E010"]

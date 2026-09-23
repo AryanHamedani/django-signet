@@ -21,7 +21,7 @@ citations.
 | Access-token revocation | not possible — access tokens are never checked against the blacklist at all; only the refresh token is, and only when it is redeemed | opt-in per view via `Strict*` authentication classes |
 | Refresh tokens at rest | `OutstandingToken.token` stores the **raw JWT as plaintext** (`models.TextField()`) | sha256 digest only; the raw token is never persisted |
 | Whitelist and blacklist | blacklist only (`token_blacklist` app) | one `TokenStore` port, either mode |
-| Storage backend | ORM only | ORM or cache, behind the same interface |
+| Storage backend | ORM only | ORM or cache, behind the same interface, chosen by one `SIGNET["STORE"]` setting |
 | Customisation | global `SIMPLE_JWT` dict of dotted import-path strings | subclass anything, per view |
 
 ## Install
@@ -204,8 +204,11 @@ trade-offs earns distrust the first time someone finds one on their own.
 - **`CacheTokenStore.revoke_all_for_user()` raises `NotImplementedError`.** A
   cache backend has no way to enumerate a user's families (`cache.keys()` /
   key-pattern scanning isn't part of Django's cache API, and Memcached can't
-  do it at all). Logout-everywhere needs `ORMTokenStore`, or your own
-  application-level index of family ids per user. Details in
+  do it at all). So under `SIGNET["STORE"] = CacheTokenStore`,
+  logout-everywhere returns 501 and **a password change revokes no
+  sessions** (it is saved, and a warning is logged). `manage.py check`
+  warns about this (`signet.W007`). Both need `ORMTokenStore`, the default,
+  or your own application-level index of family ids per user. Details in
   [`docs/stores.md`](docs/stores.md).
 - **Non-strict access tokens survive revocation until they expire.** The
   default authentication classes (`CookieJWTAuthentication`,

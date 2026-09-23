@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from django.core.cache import caches
 from django.utils import timezone
@@ -15,6 +15,7 @@ from django_signet.sessions.stores.base import (
     TokenLike,
     TokenStore,
 )
+from django_signet.signals import family_revoked
 
 if TYPE_CHECKING:
     from django.core.cache.backends.base import BaseCache
@@ -84,6 +85,8 @@ class CacheTokenStore(TokenStore):
     That narrows the window in which a mid-flight revocation is missed;
     it does not close it. See docs/stores.md.
     """
+
+    supports_revoke_all_for_user: ClassVar[bool] = False
 
     def __init__(self, alias: str = "default", deny_by_default: bool = False) -> None:
         self.alias = alias
@@ -183,8 +186,22 @@ class CacheTokenStore(TokenStore):
         # forever (timeout=None), not for the family's remaining TTL: a
         # denylist that let its own revocation entry expire would
         # silently revive the family it was recording as dead.
-        self.cache.add(_REVOKED.format(family_id), reason, None)
+        #
+        # family_revoked fires on exactly the path TokenFamily.revoke()
+        # fires it: the first, winning revocation of a family this store
+        # actually holds. A family the cache no longer has (expired,
+        # evicted, never issued) records the marker but reports nothing -
+        # there is no user or family to hand a receiver, and the ORM
+        # adapter is silent for an unknown family too.
+        family = self.cache.get(_FAMILY.format(family_id))
+        won = self.cache.add(_REVOKED.format(family_id), reason, None)
         self.cache.delete(_FAMILY.format(family_id))
+        if won and family is not None:
+            family.revoked_at = timezone.now()
+            family.revoked_reason = reason
+            family_revoked.send(
+                sender=_CachedFamily, user=family.user, family=family, reason=reason
+            )
 
     def revoke_all_for_user(self, user: Any, reason: str) -> None:
         raise NotImplementedError(

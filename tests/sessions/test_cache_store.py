@@ -248,3 +248,54 @@ def test_consume_reports_family_revoked_when_revocation_wins_the_add_race(
 
     result = store.consume(digest)
     assert result.outcome is Outcome.FAMILY_REVOKED
+
+
+# ---------------------------------------------- final review, Group B: I8
+
+
+def test_revoke_family_fires_family_revoked_once_with_the_first_reason(store, user):
+    """I8: ``family_revoked`` used to fire only from the ORM model, so a
+    receiver wired to it saw nothing under this store. Both adapters now
+    honour one event contract: it fires on the first-reason-wins success
+    path, with the same ``user``/``family``/``reason`` arguments, and not
+    again for a later revocation that loses."""
+    from django_signet.signals import family_revoked
+
+    fam = _open(store, user)
+    received = []
+
+    def receiver(sender, **kwargs):
+        received.append(kwargs)
+
+    family_revoked.connect(receiver)
+    try:
+        store.revoke_family(fam.id, RevocationReason.REUSE_DETECTED)
+        store.revoke_family(fam.id, RevocationReason.LOGOUT)
+    finally:
+        family_revoked.disconnect(receiver)
+
+    assert len(received) == 1
+    assert received[0]["reason"] == RevocationReason.REUSE_DETECTED
+    assert received[0]["user"] == user
+    assert received[0]["family"].id == fam.id
+
+
+def test_revoking_an_unknown_family_fires_nothing(store):
+    from django_signet.signals import family_revoked
+
+    received = []
+
+    def receiver(sender, **kwargs):
+        received.append(kwargs)
+
+    family_revoked.connect(receiver)
+    try:
+        store.revoke_family(uuid.uuid4(), RevocationReason.LOGOUT)
+    finally:
+        family_revoked.disconnect(receiver)
+    assert received == []
+
+
+def test_the_store_declares_that_it_cannot_revoke_all_for_a_user(store):
+    """What signet.W007 reads: a capability, not an isinstance check."""
+    assert CacheTokenStore.supports_revoke_all_for_user is False

@@ -53,8 +53,8 @@ from django_signet.exceptions import (
 )
 from django_signet.hashing import token_digest
 from django_signet.models import RevocationReason
-from django_signet.sessions.stores.base import ConsumeResult, Outcome, TokenStore
-from django_signet.sessions.stores.orm import ORMTokenStore
+from django_signet.sessions.stores.base import ConsumeResult, Outcome
+from django_signet.sessions.stores.factory import ConfiguredStore
 from django_signet.signals import token_reuse_detected
 from django_signet.tokens.access import AccessToken
 from django_signet.tokens.base import MintedToken
@@ -94,16 +94,10 @@ class RotationPolicy:
     grace_cache = setting("GRACE_CACHE")
     burn_family_on_reuse: bool = True
 
-    # A single shared instance is safe here: ORMTokenStore and
-    # CacheTokenStore hold no per-request state (CacheTokenStore's
-    # constructor args are fixed at construction time and never mutated
-    # afterwards), every method is passed the request-specific data it
-    # needs as arguments, and the correctness of consume() comes from the
-    # database/cache's own atomic primitives rather than from anything
-    # held on `self`. Concurrent RotationPolicy instances - and therefore
-    # concurrent requests - sharing this one store is exactly the
-    # scenario consume() is built to serialize correctly.
-    store: TokenStore = ORMTokenStore()
+    # Resolved through get_store() on every access, so rotation, the
+    # Strict* liveness check and password-change revocation always agree
+    # on one store. A subclass may still pin its own: `store = X()`.
+    store = ConfiguredStore()
     access_token_class = AccessToken
     refresh_token_class = RefreshToken
 

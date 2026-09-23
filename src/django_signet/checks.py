@@ -34,6 +34,9 @@ from django.conf import settings
 from django.core.cache import InvalidCacheBackendError, caches
 from django.core.checks import CheckMessage, Error
 from django.core.checks import Warning as CheckWarning
+from django.core.exceptions import ImproperlyConfigured
+
+from django_signet.sessions.stores.factory import get_store
 
 
 def _raw_signet() -> Any:
@@ -225,6 +228,44 @@ def check_signing_key(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
     ]
 
 
+def check_token_store(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
+    """The configured ``STORE`` must build, and a store that cannot revoke
+    every session for a user must say so at startup.
+
+    Warning, not Error, for the second: ``CacheTokenStore`` is a supported,
+    documented configuration. But under it a password change revokes
+    nothing (the receiver logs a warning and lets the save through) and
+    logout-all answers 501 - and a deployment should learn that from
+    ``manage.py check``, not from an incident.
+    """
+    if not isinstance(_raw_signet(), dict | None):
+        return []  # signet.E005 reports the real problem
+    try:
+        store = get_store()
+    except ImproperlyConfigured as exc:
+        return [
+            Error(
+                str(exc),
+                hint="Point SIGNET['STORE'] at a TokenStore subclass, by "
+                "dotted path, and make STORE_OPTIONS match its constructor.",
+                id="signet.E010",
+            )
+        ]
+    if store.supports_revoke_all_for_user:
+        return []
+    return [
+        CheckWarning(
+            f"The configured token store ({type(store).__name__}) cannot "
+            "revoke every session for a user: password-change revocation "
+            "and logout-all are unavailable under it.",
+            hint="A password change will be saved but will leave existing "
+            "sessions live until they expire, and POST logout-all returns "
+            "501. Use ORMTokenStore if either matters; see docs/stores.md.",
+            id="signet.W007",
+        )
+    ]
+
+
 ALL_CHECKS = (
     check_signet_setting_shape,
     check_setting_types,
@@ -232,4 +273,5 @@ ALL_CHECKS = (
     check_cookie_prefix,
     check_grace_cache,
     check_signing_key,
+    check_token_store,
 )
