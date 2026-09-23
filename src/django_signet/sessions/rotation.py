@@ -181,30 +181,36 @@ class RotationPolicy:
     def revoke(self, raw_refresh: str, reason: str) -> None:
         """Revoke the session a refresh token belongs to - logout.
 
-        The signature is verified first, so only a credential this library
-        issued can name a family. The token need not be the family's
-        current one: whoever holds an older, consumed refresh token of a
-        family can already burn it by replaying it at refresh (reuse
-        detection), so accepting it here grants nothing new. Idempotent -
-        revoking a revoked family keeps the first reason.
+        The token is *redeemed*, exactly as at refresh (see
+        :meth:`_redeem`): only the family's current token revokes it. An
+        older, already-consumed one goes through the same replay handling
+        as refresh - so a stolen token replayed here is burned as reuse and
+        reported, not quietly recorded as an ordinary logout.
         """
         claims = self.refresh_token_class().verify(raw_refresh)
-        self._revoke_named_family(claims, reason)
+        self._redeem(raw_refresh, lambda: self._revoke_named_family(claims, reason))
 
     def revoke_all(self, raw_refresh: str, reason: str) -> None:
         """Revoke every session of the refresh token's user - logout-all.
 
-        Deliberately stricter than :meth:`revoke`: the token's own family
-        must still be live. Otherwise an old refresh token lifted from a
-        log could log its user out everywhere for the rest of its
-        lifetime - a far wider blast radius than replaying it, which only
-        ever burns its own family. ``NotImplementedError`` from a store
-        that cannot enumerate a user's families propagates to the caller.
+        The token is redeemed first (see :meth:`_redeem`), so only a
+        family's current refresh token can do this. An old one lifted from
+        a log must not be able to log its user out everywhere for the rest
+        of its lifetime: replayed here it is handled as at refresh, which
+        at most burns its own family.
+
+        A store that cannot enumerate a user's families is refused
+        *before* the token is consumed - consuming it and then failing
+        would leave the client holding a spent token whose next refresh
+        looks like theft. ``NotImplementedError`` propagates to the caller.
         """
         claims = self.refresh_token_class().verify(raw_refresh)
-        if not self.store.is_live(session_id(claims)):
-            raise TokenRevoked("session is no longer live")
-        self.store.revoke_all_for_user(load_user(claims.get("sub")), reason)
+        if not self.store.supports_revoke_all_for_user:
+            raise NotImplementedError(
+                f"{type(self.store).__name__} cannot revoke every session of a user"
+            )
+        user = load_user(claims.get("sub"))
+        self._redeem(raw_refresh, lambda: self.store.revoke_all_for_user(user, reason))
 
     def on_reuse_detected(self, family: Any) -> None:
         """Hook, called after the family is burned and before ``TokenReused``
@@ -234,14 +240,37 @@ class RotationPolicy:
     def _revoke_named_family(self, claims: dict[str, Any], reason: str) -> None:
         self.store.revoke_family(session_id(claims), reason)
 
-    def _handle_consume_result(
-        self,
-        result: ConsumeResult,
-        digest: str,
-        *,
-        user: Any,
-        get_claims: Callable[[Any], dict[str, Any]] | None,
-    ) -> SessionPair:
+    def _redeem(self, raw_refresh: str, act: Callable[[], None]) -> None:
+        """Consume a refresh token and run ``act`` only if it was LIVE.
+
+        Every other outcome is settled exactly as at refresh, by
+        :meth:`_settle`: an already-consumed token goes through the replay
+        handling, and outside the grace window is burned as reuse. A
+        replay the grace window absorbs is benign, so it burns nothing -
+        but it is not a LIVE redemption either, and revokes nothing.
+
+        The consume and ``act`` share one transaction, so a refresh racing
+        this logout with the same token waits and then sees the family
+        revoked, rather than seeing the token consumed with no successor
+        and raising a false reuse alarm. The non-LIVE outcomes are settled
+        after the transaction, so a reuse burn is never rolled back with it.
+        """
+        digest = token_digest(raw_refresh)
+        with transaction.atomic():
+            result = self.store.consume(digest)
+            if result.outcome is Outcome.LIVE:
+                act()
+                return
+        if self._settle(result, digest) is not None:
+            raise TokenInvalid("refresh token was already rotated")
+
+    def _settle(self, result: ConsumeResult, digest: str) -> SessionPair | None:
+        """Raise for every consume outcome but LIVE and ALREADY_CONSUMED.
+
+        ALREADY_CONSUMED goes to :meth:`_handle_replay`, which either
+        returns the grace-window pair or burns the family and raises.
+        ``None`` means the token was LIVE.
+        """
         if result.outcome is Outcome.NOT_FOUND:
             raise TokenInvalid("refresh token is not recognised")
         if result.outcome is Outcome.EXPIRED:
@@ -250,6 +279,19 @@ class RotationPolicy:
             raise TokenRevoked("this session has been revoked")
         if result.outcome is Outcome.ALREADY_CONSUMED:
             return self._handle_replay(digest, result.family)
+        return None
+
+    def _handle_consume_result(
+        self,
+        result: ConsumeResult,
+        digest: str,
+        *,
+        user: Any,
+        get_claims: Callable[[Any], dict[str, Any]] | None,
+    ) -> SessionPair:
+        replayed = self._settle(result, digest)
+        if replayed is not None:
+            return replayed
 
         extra = get_claims(user) if get_claims is not None else None
         pair = self._mint_into(result.family, subject=str(user.pk), extra=extra)

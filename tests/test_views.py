@@ -186,7 +186,13 @@ def test_logout_all_returns_501_when_the_store_cannot_enumerate(account):
     Final-review change (C1): logout-all no longer authenticates through
     the access token, so ``force_authenticate`` cannot reach it any more;
     the request now carries a real refresh credential from a session
-    opened in the cache-backed store it is revoked against."""
+    opened in the cache-backed store it is revoked against.
+
+    Second pass (R1): logout-all now *consumes* the token it is handed, so
+    the store is refused before that happens - otherwise the 501 would
+    leave the client a spent token whose next refresh reads as theft. The
+    final rotation pins that; red on revert of the
+    ``supports_revoke_all_for_user`` guard in ``RotationPolicy.revoke_all``."""
 
     class _CacheBackedRotation(RotationPolicy):
         store = CacheTokenStore()
@@ -200,6 +206,7 @@ def test_logout_all_returns_501_when_the_store_cannot_enumerate(account):
     request.COOKIES[POLICY.csrf_name] = "t"
     response = _CacheBackedLogoutAllView.as_view()(request)
     assert response.status_code == 501
+    assert _CacheBackedRotation().rotate(pair.refresh.value).replayed is False
 
 
 # ------------------------------------------- final review, Group A: I2

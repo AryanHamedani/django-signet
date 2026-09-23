@@ -20,7 +20,9 @@ from rest_framework.test import APIClient, APIRequestFactory
 
 from django_signet.authentication import StrictCookieJWTAuthentication
 from django_signet.csrf import CSRF_HEADER
-from django_signet.models import TokenFamily
+from django_signet.models import RevocationReason, TokenFamily
+from django_signet.signals import token_reuse_detected
+from django_signet.tokens.refresh import RefreshToken
 from django_signet.transport.cookie import CookiePolicy
 from django_signet.views import TokenVerifyView
 
@@ -65,12 +67,19 @@ def _strict_verify(access_value):
     return _StrictVerifyView.as_view()(request)
 
 
-def _refresh(client, refresh_value, csrf_value):
-    """Present an explicit refresh/CSRF pair, independent of whatever the
-    client's cookie jar was left holding by an earlier response."""
+def _present(client, endpoint, refresh_value, csrf_value):
+    """Present an explicit refresh/CSRF pair to ``endpoint``, independent of
+    whatever the client's cookie jar was left holding by an earlier
+    response."""
     client.cookies[POLICY.refresh_name] = refresh_value
     client.cookies[POLICY.csrf_name] = csrf_value
-    return client.post(reverse("django_signet:refresh"), **{CSRF_HEADER: csrf_value})
+    return client.post(
+        reverse(f"django_signet:{endpoint}"), **{CSRF_HEADER: csrf_value}
+    )
+
+
+def _refresh(client, refresh_value, csrf_value):
+    return _present(client, "refresh", refresh_value, csrf_value)
 
 
 # ------------------------------------------------ Group A: C3 (Critical)
@@ -297,3 +306,69 @@ def test_a_form_encoded_login_is_rejected(account):
     assert response.status_code == 415
     assert not TokenFamily.objects.exists()
     assert POLICY.access_name not in response.cookies
+
+
+# ------------------------------------------------- second pass: R1 (Critical)
+
+
+def test_logout_all_refuses_a_refresh_token_that_was_already_rotated(account):
+    """R1: logout-all checked only that the token's *family* was live, so
+    a refresh token already consumed by a rotation - lifted from a log or
+    a proxy - still signed its user out on every device for the rest of
+    its 14-day lifetime. It must now redeem the token, and only a LIVE
+    redemption may revoke anything.
+
+    Inside the grace window the replay is the benign double-tab case: it
+    is refused and burns nothing. Outside it, the replay is reuse exactly
+    as at refresh - its own family is burned - and in neither case does
+    the user's other session die. Red on revert of the ``_redeem`` call in
+    ``RotationPolicy.revoke_all`` (200, and every session revoked).
+    """
+    victim = _login()
+    other_sid = RefreshToken().verify(_login().cookies[POLICY.refresh_name].value)[
+        "sid"
+    ]
+    old = victim.cookies[POLICY.refresh_name].value
+    csrf_value = victim.cookies[POLICY.csrf_name].value
+    assert _refresh(victim, old, csrf_value).status_code == 200
+
+    assert _present(APIClient(), "logout-all", old, csrf_value).status_code == 401
+    assert TokenFamily.objects.filter(revoked_at__isnull=True).count() == 2
+
+    cache.clear()  # the grace window has passed
+    assert _present(APIClient(), "logout-all", old, csrf_value).status_code == 401
+    mine = TokenFamily.objects.get(pk=RefreshToken().verify(old)["sid"])
+    assert mine.revoked_reason == RevocationReason.REUSE_DETECTED
+    assert TokenFamily.objects.get(pk=other_sid).is_live is True
+
+
+def test_logout_with_a_rotated_refresh_token_is_detected_as_reuse(account):
+    """R1's plain-logout half: logout only verified the signature, so an
+    old refresh token replayed there revoked its family as an ordinary
+    ``LOGOUT`` - a stolen credential used, and no one told. It must go
+    through the same replay handling as refresh: burned as
+    ``REUSE_DETECTED``, and ``token_reuse_detected`` sent. Red on revert of
+    the ``_redeem`` call in ``RotationPolicy.revoke`` (reason is
+    ``LOGOUT``, no signal).
+    """
+    victim = _login()
+    old = victim.cookies[POLICY.refresh_name].value
+    csrf_value = victim.cookies[POLICY.csrf_name].value
+    assert _refresh(victim, old, csrf_value).status_code == 200
+    cache.clear()  # the grace window has passed
+
+    detected = []
+
+    def _receiver(sender, family, **kwargs):
+        detected.append(family.pk)
+
+    token_reuse_detected.connect(_receiver)
+    try:
+        response = _present(APIClient(), "logout", old, csrf_value)
+    finally:
+        token_reuse_detected.disconnect(_receiver)
+
+    assert response.status_code == 200
+    family = TokenFamily.objects.get()
+    assert family.revoked_reason == RevocationReason.REUSE_DETECTED
+    assert detected == [family.pk]
