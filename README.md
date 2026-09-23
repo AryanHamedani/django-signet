@@ -95,17 +95,29 @@ Everything is a class you subclass, and DRF resolves authentication per view,
 so several auth behaviours coexist in one project:
 
 ```python
-class CustomerAuth(CookieJWTAuthentication):
-    access_lifetime = timedelta(minutes=5)
-
-
 class StaffAuth(StrictCookieJWTAuthentication):  # instant revocation
-    access_lifetime = timedelta(minutes=10)
     transport = CookieTransport(CookiePolicy(prefix="adm", samesite="Strict"))
 
 
 class PaymentViewSet(ModelViewSet):
     authentication_classes = [StaffAuth]
+```
+
+Token lifetime is a property of the token class a view mints, not of the
+authentication class that later verifies it — so a shorter-lived access
+token for one part of the API is a `RotationPolicy` override on the view,
+not an attribute on `CookieJWTAuthentication`:
+
+```python
+class ShortLivedAccessToken(AccessToken):
+    lifetime = timedelta(minutes=2)
+
+
+class CustomerLogin(TokenObtainView):
+    class _Rotation(RotationPolicy):
+        access_token_class = ShortLivedAccessToken
+
+    rotation = _Rotation()
 ```
 
 Add claims, react to security events, or change the cookies by overriding a
@@ -118,10 +130,17 @@ class LoginView(TokenObtainView):
 
 
 class RefreshView(TokenRefreshView):
-    class rotation(RotationPolicy):
+    class _Rotation(RotationPolicy):
         def on_reuse_detected(self, family):
             notify_security_team(family.user)
+
+    rotation = _Rotation()
 ```
+
+(`rotation` must be an *instance*, matching `SignetViewMixin`'s own
+`rotation = RotationPolicy()` — assigning the class itself, without
+instantiating it, leaves `self.rotation.rotate(...)` calling an unbound
+method and raising `TypeError`.)
 
 ## Security model
 
