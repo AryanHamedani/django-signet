@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -13,10 +13,18 @@ from django_signet.tokens.claims import build_claims
 
 @dataclass(frozen=True)
 class MintedToken:
-    value: str
+    """A freshly signed token and the metadata about it.
+
+    ``value`` is the raw, live credential; ``claims`` duplicates it (``sub``,
+    ``sid``, etc.). Neither belongs in a log line or an exception traceback,
+    so both are excluded from the generated ``__repr__`` - a stray
+    ``logger.info(minted)`` prints the object's identity, not the secret.
+    """
+
+    value: str = field(repr=False)
     jti: str
     expires_at: datetime
-    claims: dict[str, Any]
+    claims: dict[str, Any] = field(repr=False)
 
 
 class Token(abc.ABC):

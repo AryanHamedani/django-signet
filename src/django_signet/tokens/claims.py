@@ -6,8 +6,6 @@ from typing import Any
 
 from django.utils import timezone
 
-RESERVED = frozenset({"sub", "typ", "jti", "iat", "nbf", "exp", "aud", "iss", "sid"})
-
 
 def build_claims(
     *,
@@ -21,28 +19,36 @@ def build_claims(
 ) -> tuple[dict[str, Any], datetime]:
     """Build a claim set. Returns ``(claims, expires_at)``.
 
-    ``extra`` is merged first so reserved claims always win - a caller cannot
-    overwrite ``sub`` or ``exp`` through a custom ``get_claims`` hook.
+    The reserved claims are built into their own dict and merged in last, via
+    ``{**(extra or {}), **reserved}``. A later-dict key always wins a
+    collision in that merge, so a reserved claim cannot be overwritten by
+    ``extra`` no matter what it contains - this is structural, not a rule
+    that a second "reserved names" list has to be kept in sync with. A
+    caller cannot overwrite ``sub`` or ``exp`` through a custom
+    ``get_claims`` hook.
+
+    ``family_id``, ``audience`` and ``issuer`` are the exception: when one is
+    ``None`` it is simply absent from ``reserved``, so an ``extra`` key of
+    the same name survives untouched. That's intentional - those three are
+    optional claims the library itself is declining to set, not reserved
+    claims it is trying to protect.
     """
     now = timezone.now()
     expires_at = now + lifetime
-    claims: dict[str, Any] = dict(extra or {})
-    for key in RESERVED & claims.keys():
-        del claims[key]
-    claims.update(
-        {
-            "sub": subject,
-            "typ": typ,
-            "jti": str(uuid.uuid4()),
-            "iat": int(now.timestamp()),
-            "nbf": int(now.timestamp()),
-            "exp": int(expires_at.timestamp()),
-        }
-    )
+    reserved: dict[str, Any] = {
+        "sub": subject,
+        "typ": typ,
+        "jti": str(uuid.uuid4()),
+        "iat": int(now.timestamp()),
+        "nbf": int(now.timestamp()),
+        "exp": int(expires_at.timestamp()),
+    }
     if family_id is not None:
-        claims["sid"] = family_id
+        reserved["sid"] = family_id
     if audience is not None:
-        claims["aud"] = audience
+        reserved["aud"] = audience
     if issuer is not None:
-        claims["iss"] = issuer
+        reserved["iss"] = issuer
+
+    claims: dict[str, Any] = {**(extra or {}), **reserved}
     return claims, expires_at
