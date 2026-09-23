@@ -99,8 +99,10 @@ class RotationPolicy:
     burn_family_on_reuse: bool = True
 
     # Resolved through get_store() on every access, so rotation, the
-    # Strict* liveness check and password-change revocation always agree
-    # on one store. A subclass may still pin its own: `store = X()`.
+    # Strict* liveness check, password-change revocation and signet_purge
+    # always agree on one store. Choose it with SIGNET["STORE"]; pinning a
+    # store on a subclass would split it from the components that do not
+    # go through this policy.
     store = ConfiguredStore()
     access_token_class = AccessToken
     refresh_token_class = RefreshToken
