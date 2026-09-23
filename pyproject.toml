@@ -53,6 +53,7 @@ DJANGO_SETTINGS_MODULE = "tests.settings"
 testpaths = ["tests"]
 addopts = "--strict-markers --strict-config"
 filterwarnings = ["error"]
+pythonpath = ["."]
 
 [tool.coverage.run]
 source = ["django_signet"]
@@ -95,6 +96,11 @@ ignore = [
 # Tests assert, use throwaway secrets, and take unused fixtures by design.
 "tests/**" = ["S101", "S105", "S106", "ARG001", "ARG002"]
 "noxfile.py" = ["ARG001"]
+# `setting` is a lower-case descriptor, mirroring stdlib `property`; deliberate.
+"src/django_signet/conf.py" = ["N801"]
+# Exception names read as domain vocabulary (TokenExpired, not TokenExpiredError)
+# and are part of the public interface later tasks import verbatim.
+"src/django_signet/exceptions.py" = ["N818"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 8
