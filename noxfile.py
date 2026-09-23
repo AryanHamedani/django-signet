@@ -5,7 +5,7 @@ The CI matrix mirrors these sessions, so `nox` locally reproduces CI.
 
 import nox
 
-nox.options.sessions = ["lint", "typecheck", "architecture", "tests"]
+nox.options.sessions = ["lint", "typecheck", "architecture", "tests", "docs"]
 
 PYTHONS = ["3.12", "3.13", "3.14"]
 DJANGOS = ["5.2", "6.0", "6.1"]
@@ -46,3 +46,12 @@ def tests(session: nox.Session, django: str) -> None:
     )
     session.install("-e", ".[rsa]")
     session.run("pytest", "-q")
+
+
+@nox.session(python="3.13")
+def docs(session: nox.Session) -> None:
+    """Build the documentation with warnings treated as errors, as CI does."""
+    session.install("-e", ".[docs]")
+    session.run(
+        "sphinx-build", "-W", "--keep-going", "-b", "html", "docs", "docs/_build/html"
+    )

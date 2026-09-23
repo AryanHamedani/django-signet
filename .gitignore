@@ -14,3 +14,4 @@ htmlcov/
 *.sqlite3
 .env
 .superpowers/
+docs/_build/
