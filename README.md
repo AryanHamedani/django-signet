@@ -58,6 +58,10 @@ cookies when the request proved it came from your own origin - it
 presented a refresh credential and passed the CSRF check - so a cross-site
 POST, which carries none of the victim's cookies, cannot log anyone out.
 If you mount the URLs somewhere else, set `COOKIE_REFRESH_PATH` to match.
+The refresh cookie reaches **every** URL under that path, not only the
+library's endpoints - so don't mount your own views under it. Anything
+that records request cookies there (Sentry's cookie capture, request
+logging) would record the refresh token.
 
 Login accepts a JSON body only (`Content-Type: application/json`). A
 cross-site page can submit a plain HTML form without a CORS preflight, so

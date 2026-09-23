@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 from django.core.cache import cache
 from django.urls import reverse
+from django.utils.http import parse_http_date
 from rest_framework.test import APIClient, APIRequestFactory
 
 from django_signet.authentication import StrictCookieJWTAuthentication
@@ -280,6 +281,15 @@ def test_logout_with_an_ambient_refresh_cookie_requires_csrf(account):
 # ------------------------------------------------- Group E: I5, login CSRF
 
 
+def _expire_together(response):
+    """Within a second: the two cookies are set microseconds apart and
+    ``Expires`` is rounded to whole seconds, so exact string equality
+    would fail whenever a second boundary fell between them."""
+    csrf = parse_http_date(response.cookies[POLICY.csrf_name]["expires"])
+    refresh = parse_http_date(response.cookies[POLICY.refresh_name]["expires"])
+    return abs(csrf - refresh) <= 1
+
+
 def test_the_csrf_cookie_lives_as_long_as_the_refresh_cookie(account):
     """I5: the CSRF cookie had no ``Expires`` - a session cookie - while
     the refresh cookie lasts 14 days. After a browser restart every refresh
@@ -294,20 +304,14 @@ def test_the_csrf_cookie_lives_as_long_as_the_refresh_cookie(account):
         format="json",
     )
     assert login.cookies[POLICY.csrf_name]["expires"]
-    assert (
-        login.cookies[POLICY.csrf_name]["expires"]
-        == login.cookies[POLICY.refresh_name]["expires"]
-    )
+    assert _expire_together(login)
 
     rotated = client.post(
         reverse("django_signet:refresh"),
         **{CSRF_HEADER: login.cookies[POLICY.csrf_name].value},
     )
     assert rotated.status_code == 200
-    assert (
-        rotated.cookies[POLICY.csrf_name]["expires"]
-        == rotated.cookies[POLICY.refresh_name]["expires"]
-    )
+    assert _expire_together(rotated)
 
 
 def test_a_form_encoded_login_is_rejected(account):
