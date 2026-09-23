@@ -44,5 +44,5 @@ def tests(session: nox.Session, django: str) -> None:
         "pytest-django",
         "pytest-cov",
     )
-    session.install("-e", ".")
+    session.install("-e", ".[rsa]")
     session.run("pytest", "-q")
