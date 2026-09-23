@@ -42,20 +42,29 @@ token_issued = django.dispatch.Signal()
 #: ``request`` arguments as :data:`token_issued`.
 token_refreshed = django.dispatch.Signal()
 
-#: Sent when a consumed refresh token is replayed outside the grace
-#: window, with ``user``, ``family`` and ``request`` - whether or not
-#: ``RotationPolicy.burn_family_on_reuse`` then burns the family.
+#: Sent when a consumed refresh token is presented again - to refresh,
+#: logout or logout-all - and the grace window holds no pair for it, with
+#: ``user``, ``family`` and ``request``. Sent whether or not
+#: ``RotationPolicy.burn_family_on_reuse`` burns the family; when it does,
+#: the family is already revoked by the time receivers run.
 #: ``request`` is always ``None``: reuse is detected inside
 #: :class:`RotationPolicy <django_signet.sessions.rotation.RotationPolicy>`,
 #: which never sees the HTTP request that triggered it.
 token_reuse_detected = django.dispatch.Signal()
 
 #: Sent the first time a family is revoked - logout, logout-all, reuse
-#: detection, password change, or an administrator - with ``user``,
-#: ``family`` and ``reason`` (a :class:`RevocationReason
-#: <django_signet.sessions.models.RevocationReason>` value), and no
-#: ``request``: it is sent by the store layer, not a view. Never sent a
-#: second time for the same family: revocation is first-reason-wins.
+#: detection, a password change, a refresh by an inactive account
+#: (recorded as ``ADMIN``), or code calling ``revoke_family()`` -
+#: with ``user``, ``family`` and ``reason`` (a :class:`RevocationReason
+#: <django_signet.sessions.models.RevocationReason>` value), and **no**
+#: ``request``: it is sent by the store layer (``TokenFamily.revoke()``,
+#: ``CacheTokenStore.revoke_family()``), not a view, so a receiver with a
+#: required ``request`` parameter raises ``TypeError`` here. ``family`` is a
+#: ``TokenFamily`` under the ORM store and the cache store's own record
+#: under the cache store. Never sent a second time for the same family:
+#: revocation is first-reason-wins. The cache store sends nothing when the
+#: family's cache entry has already expired or been evicted: it records the
+#: revocation, but has no user or family to report.
 family_revoked = django.dispatch.Signal()
 
 _NAMES: dict[django.dispatch.Signal, str] = {
@@ -78,7 +87,9 @@ def send(signal: django.dispatch.Signal, sender: Any, **named: Any) -> None:
     """Send ``signal`` to every receiver, isolating each one's failure.
 
     Uses ``Signal.send_robust()``: every receiver is called even if an
-    earlier one raised, and no receiver exception reaches the caller. Each
+    earlier one raised, and no ``Exception`` a receiver raises reaches the
+    caller (a ``BaseException`` such as ``SystemExit`` still propagates, as
+    it does through any ``except Exception``). Each
     one is logged at ``error`` on the ``django_signet.signals`` logger,
     naming the signal and the receiver, with the receiver's traceback
     attached. (Django also logs it, without the signal's name, on
@@ -90,8 +101,8 @@ def send(signal: django.dispatch.Signal, sender: Any, **named: Any) -> None:
     and ignored too: Django's own failure logging raises for a receiver
     with no ``__qualname__``, such as a callable instance.
 
-    Receivers' return values are discarded: nothing a receiver returns or
-    raises can change what the sender does next.
+    Receivers' return values are discarded: nothing a receiver returns,
+    and no ``Exception`` it raises, can change what the sender does next.
     """
     name = _NAMES.get(signal, repr(signal))
     try:

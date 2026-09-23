@@ -31,9 +31,22 @@ already received instead of being burned as theft.
 `TokenStore` is a single abstraction behind both allowlist and denylist
 semantics - not two separate features. `get_store()` is the one place a
 concrete adapter is chosen, resolved from the `STORE` / `STORE_OPTIONS`
-settings (see {doc}`settings`); every other part of the library that
-needs a store - `RotationPolicy`, the `Strict*` authentication classes,
-password-change revocation - goes through it, via `ConfiguredStore()`.
+settings (see {doc}`settings`). Every other part of the library that
+needs a store reaches it one of two ways, and both resolve
+`SIGNET["STORE"]`:
+
+- through the `ConfiguredStore()` descriptor, which calls `get_store()`
+  on every access: `RotationPolicy.store` and
+  `BaseJWTAuthentication.store` (the `Strict*` liveness check);
+- by calling `get_store()` directly: password-change revocation,
+  `manage.py signet_purge`, and system checks `signet.E010` and
+  `signet.W007`.
+
+Allowlist and denylist stores answer `is_live()` differently for a family
+they do not hold, and `revoke_family()` has to account for that - see
+both methods below. A denylist adapter must record a revocation even for
+a family it does not hold, or `Strict*` keeps accepting the revoked
+session.
 
 ```{eval-rst}
 .. autoclass:: django_signet.sessions.stores.base.TokenStore

@@ -70,25 +70,32 @@ literal does.
   through a private factory (`tokens.backends._BackendFactory`), not
   exposed as an overridable class attribute the way the token lifetimes
   are - it is `SIGNET`-dict-only.
-- An `RS*` algorithm with no `SIGNING_KEY`/`VERIFYING_KEY` set fails
-  system check `signet.E004`.
+- An `RS*` algorithm with no `VERIFYING_KEY` is system check
+  `signet.E004`, an error; with no `SIGNING_KEY` it is `signet.W011`, a
+  warning.
 
 ### `SIGNING_KEY`
 
 - **Type:** `str | None`
 - **Default:** `None`
 - For an `HS*` algorithm, `None` falls back to `settings.SECRET_KEY`; an
-  explicit value overrides it. For an `RS*` algorithm this must be a PEM
-  private key - `SECRET_KEY` is never a valid RSA key, and `None` here is
-  an `signet.E004` error once `ALGORITHM` starts with `RS`.
+  explicit value overrides it. For an `RS*` algorithm this is the PEM
+  private key - `SECRET_KEY` is never a valid RSA key. Without it,
+  `get_backend()` still builds a backend that verifies, but signing
+  raises `ImproperlyConfigured`: login and refresh fail, and access tokens
+  minted elsewhere are still accepted. That is expected on a verify-only
+  resource server, so it is warning `signet.W011`, not an error.
 
 ### `VERIFYING_KEY`
 
 - **Type:** `str | None`
 - **Default:** `None`
-- Unused for `HS*` algorithms. For `RS*` it must be a PEM public key;
-  missing, `get_backend()` raises `ImproperlyConfigured` and every request
-  fails, which is exactly what `signet.E004` catches at startup instead.
+- Unused for `HS*` algorithms. For `RS*` it must be a PEM public key.
+  Without it, `get_backend()` raises `ImproperlyConfigured`, so no token
+  can be signed or verified: login fails with a 500, and so does every
+  request that presents a token to refresh, logout, logout-all or a
+  Signet-authenticated view. System check `signet.E004` reports it at
+  startup.
 
 ### `AUDIENCE`
 
@@ -147,13 +154,20 @@ literal does.
   imported class by default because `settings.py` cannot import a module
   that imports models - see `django_signet.sessions.stores.factory.get_store`.
   Resolved fresh on every access (never cached), through the private
-  `_StoreSettings` class; there is no `setting()`-backed class attribute
-  named `store` to override on a subclass. To pin a store outside
-  `SIGNET` entirely, assign a literal instead of relying on the
-  `ConfiguredStore()` descriptor - e.g.
-  `class MyRotation(RotationPolicy): store = MyTokenStore()` - which
-  shadows it the same way any other subclass literal does.
-- A `STORE` that fails to import or build is `signet.E010`. A store whose
+  `_StoreSettings` class.
+- **`SIGNET["STORE"]` is the only supported way to choose a store.**
+  Login, refresh and logout, the `Strict*` liveness check,
+  password-change revocation, `manage.py signet_purge` and the system
+  checks all have to agree on where sessions live, and password-change
+  revocation, `signet_purge` and the checks call `get_store()` directly.
+  Assigning a store on one class instead - `store = MyTokenStore()` on a
+  `RotationPolicy` subclass, say - reaches only that class, and splits
+  sessions across two stores: a password change revokes nothing in the
+  pinned store, `Strict*` checks a different store from the one logout
+  revoked in, and the checks inspect the wrong one.
+- Anything that goes wrong building the store - an unimportable path, a
+  constructor that rejects `STORE_OPTIONS` with any exception, or an
+  object that is not a `TokenStore` - is `signet.E010`. A store whose
   `supports_revoke_all_for_user` is `False` is `signet.W007`.
 
 ### `STORE_OPTIONS`
@@ -188,9 +202,10 @@ entirely** - `CookiePolicy.access_name` returns
 `self.explicit_access_name or self.resolved_name(...)`, so setting an
 explicit name opts out of automatic `__Host-`/`__Secure-` prefixing for
 that cookie, even under `COOKIE_SECURE=True`. `signet.E002` still checks
-an explicit `COOKIE_REFRESH_NAME` that happens to start with `__Host-`
-itself against `COOKIE_REFRESH_PATH` and `COOKIE_DOMAIN`, since that
-value is browser-interpreted regardless of how it was set.
+every explicit name that starts with `__Host-` or `__Secure-` (matched
+case-insensitively, as browsers do) against the attributes the settings
+give that cookie, since the prefix is browser-interpreted regardless of
+how the name was set.
 
 ### `COOKIE_PREFIX`
 
@@ -213,7 +228,8 @@ value is browser-interpreted regardless of how it was set.
 - **Default:** `True`
 - Whether cookies are marked `Secure`, and the gate on `__Host-`/`__Secure-`
   prefixing (`resolved_name` returns the base name, unprefixed, when this
-  is `False`). `False` while `DEBUG=False` is `signet.E001`.
+  is `False`). Any false value (`False`, `0`, `None`, `""`) while
+  `DEBUG=False` is `signet.E001`.
 
 ### `COOKIE_HTTPONLY`
 
@@ -254,19 +270,18 @@ value is browser-interpreted regardless of how it was set.
 - **Default:** `None` (derive the name from `COOKIE_PREFIX` and the
   prefix rules above)
 - An explicit override for the access cookie's name. See the note on
-  bypassing automatic prefixing above.
+  bypassing automatic prefixing above, and `signet.E002`.
 
 ### `COOKIE_REFRESH_NAME`
 
 - **Type:** `str | None`
 - **Default:** `None` (derive from `COOKIE_PREFIX`)
 - An explicit override for the refresh cookie's name. See the note on
-  bypassing automatic prefixing above, and `signet.E002` for the one case
-  an explicit value is still checked.
+  bypassing automatic prefixing above, and `signet.E002`.
 
 ### `COOKIE_CSRF_NAME`
 
 - **Type:** `str | None`
 - **Default:** `None` (derive from `COOKIE_PREFIX`)
 - An explicit override for the CSRF cookie's name. See the note on
-  bypassing automatic prefixing above.
+  bypassing automatic prefixing above, and `signet.E002`.

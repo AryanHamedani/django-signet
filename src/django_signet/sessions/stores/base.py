@@ -75,10 +75,16 @@ class TokenLike(Protocol):
 class Outcome(enum.Enum):
     """Every state ``TokenStore.consume()`` can report for a digest.
 
-    ``LIVE`` is the only outcome that redeems - everything else is a
-    reason the caller must refuse the token, with ``ALREADY_CONSUMED``
-    singled out by ``RotationPolicy`` for the grace-window replay check
-    before it is treated as reuse.
+    How ``RotationPolicy`` acts on each, at refresh and at logout and
+    logout-all alike:
+
+    - ``LIVE`` redeems.
+    - ``ALREADY_CONSUMED`` redeems too while the grace window still holds
+      the pair this token's rotation produced - the benign double-tab
+      replay. Without a grace entry it is reuse: the family is burned
+      (unless ``burn_family_on_reuse`` is off) and ``TokenReused`` raised.
+    - ``NOT_FOUND``, ``EXPIRED`` and ``FAMILY_REVOKED`` are refused, as
+      ``TokenInvalid``, ``TokenExpired`` and ``TokenRevoked``.
     """
 
     NOT_FOUND = "not_found"
@@ -93,10 +99,13 @@ class ConsumeResult:
     """What ``TokenStore.consume()`` returns: the outcome, and the family
     and token it was decided against when either exists.
 
-    ``family``/``issued_token`` are ``None`` only for ``NOT_FOUND`` -
-    every other outcome names the record the decision was made about, so
-    a caller can revoke the family or report on the token without a
-    second lookup.
+    ``issued_token`` is ``None`` only for ``NOT_FOUND``. ``family`` is
+    ``None`` for ``NOT_FOUND`` too, and under ``CacheTokenStore`` it can
+    also be ``None`` for ``FAMILY_REVOKED``: revoking a family deletes its
+    cache entry, and a family whose entry expired or was evicted is
+    reported as revoked. For every other outcome both name the record the
+    decision was made about, so a caller can revoke the family or report
+    on the token without a second lookup.
     """
 
     outcome: Outcome
@@ -152,18 +161,35 @@ class TokenStore(abc.ABC):
 
     @abc.abstractmethod
     def is_live(self, family_id: uuid.UUID) -> bool:
-        """Whether the family is still usable: exists, unrevoked, and
-        unexpired. What a ``Strict*`` authentication class checks on every
-        request to stop a revoked session authenticating immediately,
-        rather than only once its still-valid access token expires on its
-        own.
+        """Whether the family is still usable. What a ``Strict*``
+        authentication class checks on every request to stop a revoked
+        session authenticating immediately, rather than only once its
+        still-valid access token expires on its own.
+
+        An allowlist store (``ORMTokenStore``, and ``CacheTokenStore`` by
+        default) answers ``True`` only for a family it holds that is
+        unrevoked and unexpired. A denylist store
+        (``CacheTokenStore(deny_by_default=True)``) answers ``True`` for
+        any family, known or not, unless a revocation was recorded for it.
         """
 
     @abc.abstractmethod
     def revoke_family(self, family_id: uuid.UUID, reason: str) -> None:
-        """Revoke one session family, recording ``reason``. A no-op for a
-        family the store no longer holds (already expired or purged),
-        since there is nothing left to revoke."""
+        """Revoke one session family, recording ``reason``.
+
+        A requirement on every implementation: afterwards
+        :meth:`is_live` must answer ``False`` for ``family_id``, **even for
+        a family the store does not hold** (expired, purged, evicted, never
+        issued). An allowlist store gets that for free - an unknown family
+        is already not live, so ``ORMTokenStore`` does nothing for one. A
+        denylist store treats an unknown family as live, so it must record
+        the revocation anyway (``CacheTokenStore`` writes a marker with no
+        timeout); one that skipped it would fail open, and ``Strict*``
+        would keep accepting the revoked session.
+
+        The first revocation of a family wins: a later call must not
+        overwrite the recorded ``reason``.
+        """
 
     @abc.abstractmethod
     def revoke_all_for_user(self, user: Any, reason: str) -> None:
