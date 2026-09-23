@@ -43,3 +43,16 @@ design flaw demands it, and every such change is listed here.
   token (they are `AllowAny` and read the refresh credential); a failed
   CSRF check on them answers 403, as refresh does.
 - `COOKIE_REFRESH_PATH` defaults to `/api/auth/` (was `/api/auth/refresh`).
+
+### Fixed before release
+
+- **Security:** a signal receiver can no longer change an authentication
+  outcome. Every signal (`token_issued`, `token_refreshed`,
+  `token_reuse_detected`, `family_revoked`) is now sent through
+  `django_signet.signals.send`, which uses `send_robust()` and logs each
+  receiver exception, with its traceback, at `error` on the
+  `django_signet.signals` logger. Previously a raising `family_revoked`
+  receiver rolled back a logout's revocation (logout answered 500 and the
+  session stayed live), and a raising `token_issued` receiver turned a
+  successful login into a 500. Decisions belong in hooks
+  (`on_reuse_detected`, `on_authentication_failed`), which are unchanged.

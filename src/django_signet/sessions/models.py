@@ -7,7 +7,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from django_signet.signals import family_revoked
+from django_signet.signals import family_revoked, send
 
 
 class RevocationReason(models.TextChoices):
@@ -71,8 +71,12 @@ class TokenFamily(models.Model):
             return
         self.revoked_at = now
         self.revoked_reason = reason
-        family_revoked.send(
-            sender=type(self), user=self.user, family=self, reason=reason
+        send(
+            family_revoked,
+            sender=type(self),
+            user=self.user,
+            family=self,
+            reason=reason,
         )
 
 

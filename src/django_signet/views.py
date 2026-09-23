@@ -15,7 +15,7 @@ from django_signet.exceptions import CSRFFailed, SignetError, TransportError
 from django_signet.models import RevocationReason
 from django_signet.serializers import TokenObtainSerializer
 from django_signet.sessions.rotation import RotationPolicy
-from django_signet.signals import token_issued, token_refreshed
+from django_signet.signals import send, token_issued, token_refreshed
 from django_signet.transport.base import Transport
 from django_signet.transport.cookie import CookieTransport
 from django_signet.transport.header import HybridTransport
@@ -150,8 +150,12 @@ class TokenObtainView(SignetViewMixin, APIView):
         )
         response = Response(self.get_response_data(user, pair))
         self.set_cookies(response, pair)
-        token_issued.send(
-            sender=type(self), user=user, family=pair.family, request=request
+        send(
+            token_issued,
+            sender=type(self),
+            user=user,
+            family=pair.family,
+            request=request,
         )
         return response
 
@@ -240,7 +244,8 @@ class TokenRefreshView(RefreshCredentialView):
 
         response = Response(self.get_response_data(None, pair))
         self.set_cookies(response, pair)
-        token_refreshed.send(
+        send(
+            token_refreshed,
             sender=type(self),
             user=getattr(pair.family, "user", None),
             family=pair.family,

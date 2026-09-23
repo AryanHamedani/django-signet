@@ -55,7 +55,7 @@ from django_signet.hashing import token_digest
 from django_signet.models import RevocationReason
 from django_signet.sessions.stores.base import ConsumeResult, Outcome
 from django_signet.sessions.stores.factory import ConfiguredStore
-from django_signet.signals import token_reuse_detected
+from django_signet.signals import send, token_reuse_detected
 from django_signet.tokens.access import AccessToken
 from django_signet.tokens.base import MintedToken
 from django_signet.tokens.claims import session_id
@@ -260,9 +260,12 @@ class RotationPolicy:
         The consume and a LIVE ``act`` share one transaction, so a refresh
         of the same token that arrives while this logout is in flight
         waits and then sees the family revoked, not a spent token with no
-        successor. That covers only this ordering. The reverse - a refresh
-        that has committed ``consume()`` but not yet written its grace
-        entry - still makes this logout read as reuse: the family is
+        successor. The ``family_revoked`` a LIVE logout sends from inside
+        that transaction cannot roll it back: a receiver that raises is
+        logged and ignored (see :mod:`django_signet.signals`). That covers
+        only this ordering. The reverse - a refresh that has committed
+        ``consume()`` but not yet written its grace entry - still makes
+        this logout read as reuse: the family is
         burned as ``REUSE_DETECTED`` and ``token_reuse_detected`` fires, a
         false alarm. It is the same window two tabs refreshing at once
         already have, and is not closed here. The non-LIVE outcomes are
@@ -344,7 +347,8 @@ class RotationPolicy:
             return
         if self.burn_family_on_reuse:
             self.store.revoke_family(family.id, RevocationReason.REUSE_DETECTED)
-        token_reuse_detected.send(
+        send(
+            token_reuse_detected,
             sender=type(self),
             user=getattr(family, "user", None),
             family=family,
