@@ -13,6 +13,7 @@ import uuid
 from typing import Any
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
@@ -35,6 +36,12 @@ from django_signet.transport.header import HeaderTransport, HybridTransport
 # string across the test suite - it must never vary with what actually
 # went wrong, or the client learns which check failed.
 GENERIC_FAILURE = "Invalid or expired credentials."
+
+# Sentinel distinguishing "no is_active attribute at all" from an actual
+# value, including a falsy one - getattr's own default can't do that,
+# since None (or False) is a legitimate value we'd otherwise conflate
+# with "not present".
+_NO_IS_ACTIVE: Any = object()
 
 
 class BaseJWTAuthentication(BaseAuthentication):
@@ -98,21 +105,38 @@ class BaseJWTAuthentication(BaseAuthentication):
     def get_user(self, claims: dict[str, Any]) -> Any:
         """Resolve ``claims['sub']`` to a user and reject an inactive one.
 
-        The active check mirrors Django's own
-        ``ModelBackend.user_can_authenticate``: a missing ``is_active``
-        attribute passes (some custom user models don't define it), but an
-        explicit ``False`` is always rejected. Skipping this check is the
-        exact CVE-2024-22513 regression - a disabled account must lose API
-        access immediately, not merely once its outstanding access token
-        expires on its own.
+        This deliberately does NOT mirror Django's own
+        ``ModelBackend.user_can_authenticate``, which treats a missing
+        ``is_active`` attribute as active - safe there only because
+        ``AbstractBaseUser`` guarantees the attribute exists. This is an
+        auth *library* whose job includes hardening against
+        CVE-2024-22513 - "disabled accounts keep working" - so it fails
+        closed instead: a user model that doesn't define ``is_active`` at
+        all is rejected, not silently trusted. Any conventional user model
+        (anything deriving from ``AbstractBaseUser``/``AbstractUser``) is
+        unaffected, since it always has the attribute.
         """
         user_model = get_user_model()
         try:
             user = user_model.objects.get(pk=claims["sub"])
-        except (user_model.DoesNotExist, KeyError, ValueError, TypeError) as exc:
+        except (
+            user_model.DoesNotExist,
+            KeyError,
+            ValueError,
+            TypeError,
+            # What a UUID-keyed custom user model's UUIDField.get_prep_value()
+            # raises for a `sub` that isn't a valid UUID - without this, a
+            # malformed subject on such a model is an unhandled 500 with the
+            # raw claim value in a debug traceback, not the generic 401
+            # every other bad-credential cause here produces.
+            ValidationError,
+        ) as exc:
             raise TokenInvalid("credential subject could not be resolved") from exc
-        is_active = getattr(user, "is_active", None)
-        if not (is_active or is_active is None):
+
+        is_active = getattr(user, "is_active", _NO_IS_ACTIVE)
+        if is_active is _NO_IS_ACTIVE:
+            raise TokenRevoked("credential subject has no is_active attribute")
+        if not is_active:
             raise TokenRevoked("credential subject is not active")
         return user
 
@@ -150,16 +174,34 @@ class BaseJWTAuthentication(BaseAuthentication):
         to. Split out from that method - rather than reading
         ``self.transport.policy`` there directly - because only
         ``CookieTransport`` and ``HybridTransport`` carry a
-        ``CookiePolicy``; ``Transport`` itself does not, and
-        ``should_enforce_csrf`` only ever returns ``True`` when the
-        transport is one of those two (``HeaderTransport.is_ambient`` is
-        always ``False``). The ``isinstance`` check here is what lets
-        static typing confirm that instead of assuming it.
+        ``CookiePolicy``; ``Transport`` itself does not. In this codebase
+        ``should_enforce_csrf`` only ever returns ``True`` for one of
+        those two (``HeaderTransport.is_ambient`` is always ``False``),
+        and the ``isinstance`` check here is what lets static typing
+        confirm that instead of assuming it.
+
+        A third-party ``Transport`` could in principle be ambient without
+        being either of those two - and if ``should_enforce_csrf`` says a
+        request needs CSRF enforcement, that decision must never be
+        silently dropped just because this method doesn't know how to
+        carry it out. The ``else`` branch below turns that combination
+        into a loud ``NotImplementedError`` instead of an unenforced
+        credential: a live security check that got skipped without a
+        trace is worse than one that breaks the request outright.
         """
         if not self.should_enforce_csrf(request):
             return
         if isinstance(self.transport, CookieTransport | HybridTransport):
             validate_csrf(request, self.transport.policy)
+            return
+        raise NotImplementedError(
+            f"{type(self.transport).__name__}.is_ambient is True, so "
+            "should_enforce_csrf() requires a CSRF check, but this "
+            "transport carries no CookiePolicy for _enforce_csrf_if_needed() "
+            "to validate against. Give it a `.policy` (a CookiePolicy) or "
+            "override should_enforce_csrf()/_enforce_csrf_if_needed() to "
+            "handle it explicitly - do not let CSRF go silently unchecked."
+        )
 
     def check_family(self, claims: dict[str, Any]) -> None:
         """The ``Strict*`` half of the trade-off: one store lookup to
