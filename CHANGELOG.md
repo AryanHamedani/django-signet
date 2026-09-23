@@ -58,8 +58,8 @@ design flaw demands it, and every such change is listed here.
   under their own savepoint, so a receiver whose database write fails
   cannot silently roll back the revocation. A failure of the dispatch
   itself (Django's failure logging raises on a callable-instance receiver)
-  is logged and ignored as well. Decisions belong in hooks
-  (`on_reuse_detected`, `on_authentication_failed`), which are unchanged.
+  is logged and ignored as well. A decision that should change the
+  outcome belongs in a hook such as `on_authentication_failed`.
 - **Security:** `RotationPolicy.on_reuse_detected` can no longer undo a
   reuse burn. The hook runs after the burn is written, but under
   `ATOMIC_REQUESTS` before it is committed, so a hook that raised rolled
@@ -88,3 +88,18 @@ design flaw demands it, and every such change is listed here.
   `SIGNING_KEY` - where `get_backend()` still verifies and only signing
   fails - is the new Warning `signet.W011`: login and refresh cannot work
   there, which is expected on a resource server that holds no private key.
+- The cookie authentication classes now answer a failed CSRF check with
+  **403** (`PermissionDenied`), as DRF's `SessionAuthentication` does and
+  as this library's own refresh and logout views already did. It was a
+  401, which told a client to refresh a session that was fine and hid the
+  real fault, a missing or wrong `X-CSRF-Token` header. The body is still
+  the one generic failure message.
+- Logout through a realm whose transport sets no cookies (a header
+  client) answers **401** to a request that presents no credential. It
+  answered 200 "Signed out." while the session stayed live. A browser
+  logout that presents nothing still answers 200.
+- New system check `signet.W012` warns when `COOKIE_SAMESITE` is `"None"`
+  and `COOKIE_SECURE` is off: Chromium-based browsers silently reject such
+  a cookie.
+- `django_signet.checks` is now a package (`settings`, `cookies`, `urls`).
+  Every check is still importable from `django_signet.checks`.
