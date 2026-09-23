@@ -54,12 +54,23 @@ class TokenFamily(models.Model):
 
     def revoke(self, reason: str) -> None:
         """Idempotent: the first reason recorded is the one that sticks, so a
-        later routine logout cannot mask an earlier security event."""
-        if self.revoked_at is not None:
+        later routine logout cannot mask an earlier security event.
+
+        The guard has to be a single conditional ``UPDATE``, not a check on
+        ``self.revoked_at`` followed by an unconditional save: two instances
+        of the same row loaded before either was revoked would both pass an
+        in-memory check, and the second write would silently replace a
+        recorded security incident. ``WHERE revoked_at IS NULL`` lets the
+        database - not this process - decide which caller wins.
+        """
+        now = timezone.now()
+        updated = TokenFamily.objects.filter(
+            pk=self.pk, revoked_at__isnull=True
+        ).update(revoked_at=now, revoked_reason=reason)
+        if not updated:
             return
-        self.revoked_at = timezone.now()
+        self.revoked_at = now
         self.revoked_reason = reason
-        self.save(update_fields=["revoked_at", "revoked_reason"])
         family_revoked.send(
             sender=type(self), user=self.user, family=self, reason=reason
         )
