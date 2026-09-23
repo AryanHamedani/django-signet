@@ -248,3 +248,52 @@ def test_logout_with_an_ambient_refresh_cookie_requires_csrf(account):
         assert response.status_code == 403
         assert POLICY.refresh_name not in response.cookies
     assert TokenFamily.objects.get().is_live is True
+
+
+# ------------------------------------------------- Group E: I5, login CSRF
+
+
+def test_the_csrf_cookie_lives_as_long_as_the_refresh_cookie(account):
+    """I5: the CSRF cookie had no ``Expires`` - a session cookie - while
+    the refresh cookie lasts 14 days. After a browser restart every refresh
+    returned 403 (and cookies are deliberately left in place on a CSRF
+    failure), so a 14-day session silently lasted one browser session.
+    Both cookies now expire together, on login and on every rotation.
+    Red on revert of ``expires=`` in ``SignetViewMixin.set_cookies``."""
+    client = APIClient()
+    login = client.post(
+        reverse("django_signet:login"),
+        {"username": "bob", "password": PASSWORD},
+        format="json",
+    )
+    assert login.cookies[POLICY.csrf_name]["expires"]
+    assert (
+        login.cookies[POLICY.csrf_name]["expires"]
+        == login.cookies[POLICY.refresh_name]["expires"]
+    )
+
+    rotated = client.post(
+        reverse("django_signet:refresh"),
+        **{CSRF_HEADER: login.cookies[POLICY.csrf_name].value},
+    )
+    assert rotated.status_code == 200
+    assert (
+        rotated.cookies[POLICY.csrf_name]["expires"]
+        == rotated.cookies[POLICY.refresh_name]["expires"]
+    )
+
+
+def test_a_form_encoded_login_is_rejected(account):
+    """Login CSRF: a cross-site page can submit an HTML form - form-encoded,
+    no preflight - but cannot send ``application/json`` without CORS
+    permission. Accepting form posts let an attacker log a victim's
+    browser into the *attacker's* account. JSON only, so it is 415 and no
+    session is opened. Red on revert of ``parser_classes`` on
+    ``TokenObtainView``."""
+    response = APIClient().post(
+        reverse("django_signet:login"),
+        {"username": "bob", "password": PASSWORD},
+    )
+    assert response.status_code == 415
+    assert not TokenFamily.objects.exists()
+    assert POLICY.access_name not in response.cookies

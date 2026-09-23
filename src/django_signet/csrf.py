@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import secrets
+from datetime import datetime
 from typing import Any
 
 from django_signet.exceptions import CSRFFailed
@@ -44,8 +45,21 @@ def new_csrf_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def issue_csrf(response: Any, policy: CookiePolicy, token: str | None = None) -> str:
+def issue_csrf(
+    response: Any,
+    policy: CookiePolicy,
+    token: str | None = None,
+    *,
+    expires: datetime | None = None,
+) -> str:
     """Set the double-submit cookie and return the token that was set.
+
+    ``expires`` should be the refresh token's expiry - which is what the
+    views pass. The CSRF cookie has to outlive every refresh the session
+    will make; issued as a session cookie (no ``Expires``) it died with
+    the browser while the 14-day refresh cookie survived, and every
+    refresh after a restart failed CSRF with a 403 that - deliberately -
+    clears nothing, so the session was stranded.
 
     Deliberately NOT httponly: the client has to read this cookie in
     JavaScript in order to echo it back in the ``CSRF_HEADER`` header,
@@ -73,6 +87,7 @@ def issue_csrf(response: Any, policy: CookiePolicy, token: str | None = None) ->
     response.set_cookie(
         policy.csrf_name,
         token,
+        expires=expires,
         path="/",
         domain=policy.domain,
         secure=policy.secure,

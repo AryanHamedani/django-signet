@@ -5,6 +5,7 @@ from typing import Any
 
 from rest_framework import status
 from rest_framework.authentication import BaseAuthentication
+from rest_framework.parsers import JSONParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -59,7 +60,11 @@ class SignetViewMixin:
         sets no cookies has no policy to issue one with."""
         self.transport.attach(response, pair)
         if self.transport.is_ambient:
-            issue_csrf(response, csrf_policy(self.transport))
+            issue_csrf(
+                response,
+                csrf_policy(self.transport),
+                expires=pair.refresh.expires_at,
+            )
 
     def client_ip(self, request: Any) -> str | None:
         ip: str | None = request.META.get("REMOTE_ADDR")
@@ -103,6 +108,10 @@ class TokenObtainView(SignetViewMixin, APIView):
     # -level) declaration of the same names.
     authentication_classes = ()
     permission_classes = (AllowAny,)
+    # JSON only. A cross-site page can submit a form-encoded POST with no
+    # preflight, but not application/json; accepting forms here allowed
+    # login CSRF - logging a victim's browser into the attacker's account.
+    parser_classes = (JSONParser,)
     serializer_class = TokenObtainSerializer
 
     def post(self, request: Any) -> Response:
