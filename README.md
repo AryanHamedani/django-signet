@@ -265,6 +265,22 @@ access token after the first refresh.
 - Cookie-authenticated writes require a double-submit CSRF token compared in
   constant time.
 
+## Maintenance
+
+`purge_expired()` is never called automatically — nothing in the request
+path calls it, so an `ORMTokenStore` keeps every expired family, and its
+refresh-token digests, indefinitely. Run it on a schedule (cron, a Celery
+beat task, a platform scheduler):
+
+```bash
+python manage.py signet_purge
+```
+
+It resolves the store through the same `get_store()` factory as
+everything else, so it purges whatever `SIGNET["STORE"]` names. Under
+`CacheTokenStore`, entries expire on their own via the cache backend's
+TTL, so the command reports nothing to purge.
+
 ## Limitations
 
 Stated here, not just in the migration guide — a library that hides its
