@@ -56,6 +56,11 @@ three (and still isn't sent on ordinary API calls). Logout is idempotent:
 it always clears the cookies, even when there is nothing left to revoke.
 If you mount the URLs somewhere else, set `COOKIE_REFRESH_PATH` to match.
 
+Login accepts a JSON body only (`Content-Type: application/json`). A
+cross-site page can submit a plain HTML form without a CORS preflight, so
+accepting form-encoded logins would let it sign a victim's browser into the
+attacker's account (login CSRF); a form-encoded login gets `415`.
+
 ### Cookie-transport clients must send `X-CSRF-Token` on refresh and logout
 
 This is the one part of the contract that is easy to miss and produces a
@@ -69,6 +74,10 @@ silent 403 if you do. `TokenObtainView` sets three cookies on login:
 library's defaults — `COOKIE_SECURE=True`. If you run with
 `COOKIE_SECURE=False` for local HTTP development, both prefixes drop and
 you'll see `signet-access`, `signet-refresh`, `signet-csrf` instead.)
+
+The CSRF cookie expires together with the refresh cookie, on login and on
+every rotation, so a session survives a browser restart for as long as its
+refresh token does.
 
 Cookies are ambient — the browser attaches them to every matching request on
 its own, which is what makes CSRF possible. So every unsafe request made
