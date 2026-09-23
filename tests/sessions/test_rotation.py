@@ -357,3 +357,29 @@ def test_rotate_derives_extra_claims_from_the_user_it_loads(policy, user):
     assert seen == [user]
     assert AccessToken().verify(pair.access.value)["org"] == "acme"
     assert pair.refresh.claims["org"] == "acme"
+
+
+def test_a_get_claims_failure_leaves_the_token_redeemable(policy, user):
+    """R3: ``get_claims`` ran after ``consume()``. A hook that raised - a
+    transient database error, say - left the old token consumed with no
+    successor issued, so the client's retry was indistinguishable from
+    theft: ``TokenReused``, the family burned, ``token_reuse_detected``
+    fired. The hook now runs before the token is consumed, so the retry
+    simply succeeds. Red on moving the ``get_claims`` call back after
+    ``consume()``."""
+    pair = policy.open_session(user)
+    calls = []
+
+    def flaky_claims(u):
+        calls.append(u.pk)
+        if len(calls) == 1:
+            raise RuntimeError("transient database error")
+        return {"org": "acme"}
+
+    with pytest.raises(RuntimeError):
+        policy.rotate(pair.refresh.value, get_claims=flaky_claims)
+
+    retried = policy.rotate(pair.refresh.value, get_claims=flaky_claims)
+    assert retried.replayed is False
+    assert AccessToken().verify(retried.access.value)["org"] == "acme"
+    assert TokenFamily.objects.get().is_live is True
