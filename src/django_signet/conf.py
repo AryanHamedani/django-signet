@@ -16,6 +16,10 @@ DEFAULTS: dict[str, Any] = {
     "LEEWAY": timedelta(seconds=0),
     "GRACE_WINDOW": timedelta(seconds=10),
     "GRACE_CACHE": "default",
+    # A dotted path, not a class: settings.py cannot import a module that
+    # imports models. See django_signet.sessions.stores.factory.get_store.
+    "STORE": "django_signet.sessions.stores.orm.ORMTokenStore",
+    "STORE_OPTIONS": {},
     "COOKIE_PREFIX": "signet",
     "COOKIE_SAMESITE": "Lax",
     "COOKIE_SECURE": True,

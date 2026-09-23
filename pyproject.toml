@@ -200,3 +200,19 @@ forbidden_modules = [
     "django_signet.serializers",
     "django_signet.views",
 ]
+
+[[tool.importlinter.contracts]]
+name = "only the store factory chooses a concrete store"
+type = "protected"
+protected_modules = [
+    "django_signet.sessions.stores.orm",
+    "django_signet.sessions.stores.cache",
+]
+allowed_importers = ["django_signet.sessions.stores.factory"]
+as_packages = false
+broken_contract_guidance = """
+Resolve the store through django_signet.sessions.stores.factory.get_store()
+(or the ConfiguredStore descriptor) instead. Three independent construction
+sites once let login, Strict* authentication and password-change revocation
+each talk to a different store - see the final-review finding C2.
+"""

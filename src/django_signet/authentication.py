@@ -20,8 +20,7 @@ from django_signet.exceptions import (
     TokenRevoked,
     TransportError,
 )
-from django_signet.sessions.stores.base import TokenStore
-from django_signet.sessions.stores.orm import ORMTokenStore
+from django_signet.sessions.stores.factory import ConfiguredStore
 from django_signet.tokens.access import AccessToken
 from django_signet.tokens.base import Token
 from django_signet.tokens.claims import session_id
@@ -57,7 +56,7 @@ class BaseJWTAuthentication(BaseAuthentication):
 
     transport: Transport = CookieTransport()
     token_class: type[Token] = AccessToken
-    store: TokenStore = ORMTokenStore()
+    store = ConfiguredStore()  # the configured SIGNET["STORE"]; see get_store()
     strict: bool = False
     enforce_csrf: bool = True
 

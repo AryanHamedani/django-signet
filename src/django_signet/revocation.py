@@ -8,9 +8,13 @@ which the outgoing row is still queryable independently of ``instance``.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from django_signet.models import RevocationReason
+from django_signet.sessions.stores.factory import get_store
+
+logger = logging.getLogger(__name__)
 
 
 def revoke_on_password_change(sender: Any, instance: Any, **_kwargs: Any) -> None:
@@ -36,6 +40,16 @@ def revoke_on_password_change(sender: Any, instance: Any, **_kwargs: Any) -> Non
     change succeed while silently leaving old sessions live - but it means a
     transient store failure surfaces as a failed password change rather than
     a background/logged warning, which is worth knowing going in.
+
+    The one exception to fail-closed is a store that *cannot* revoke by
+    user at all - ``CacheTokenStore``, whose ``revoke_all_for_user`` raises
+    ``NotImplementedError`` by design. Blocking the save there would break
+    every password change on a documented configuration, so the save goes
+    through and a warning is logged instead; system check signet.W007
+    announces the same gap at startup. The store is the configured one
+    (``get_store()``), never a hardcoded adapter: a hardcoded
+    ``ORMTokenStore`` once made this receiver revoke nothing, silently,
+    under a cache store.
     """
     if instance.pk is None:
         return
@@ -46,6 +60,14 @@ def revoke_on_password_change(sender: Any, instance: Any, **_kwargs: Any) -> Non
     if previous.password == instance.password:
         return
 
-    from django_signet.sessions.stores.orm import ORMTokenStore
-
-    ORMTokenStore().revoke_all_for_user(instance, RevocationReason.PASSWORD_CHANGE)
+    store = get_store()
+    try:
+        store.revoke_all_for_user(instance, RevocationReason.PASSWORD_CHANGE)
+    except NotImplementedError:
+        logger.warning(
+            "signet: the password for user %r changed, but the configured "
+            "token store (%s) cannot revoke every session for a user; its "
+            "existing sessions stay live until they expire or are logged out.",
+            instance.pk,
+            type(store).__name__,
+        )

@@ -14,16 +14,28 @@ that line, not by reasoning about it.
 from __future__ import annotations
 
 import pytest
+from django.core.cache import cache
 from django.urls import reverse
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory
 
+from django_signet.authentication import StrictCookieJWTAuthentication
 from django_signet.csrf import CSRF_HEADER
 from django_signet.models import TokenFamily
 from django_signet.transport.cookie import CookiePolicy
+from django_signet.views import TokenVerifyView
 
 pytestmark = pytest.mark.django_db
 POLICY = CookiePolicy()
 PASSWORD = "correct-horse-battery-staple"
+_CACHE_STORE = "django_signet.sessions.stores.cache.CacheTokenStore"
+
+
+@pytest.fixture(autouse=True)
+def _clean_cache():
+    """Several tests here run under a cache-backed store."""
+    cache.clear()
+    yield
+    cache.clear()
 
 
 @pytest.fixture
@@ -41,6 +53,16 @@ def _login(username="bob", password=PASSWORD):
         format="json",
     )
     return c
+
+
+class _StrictVerifyView(TokenVerifyView):
+    authentication_classes = (StrictCookieJWTAuthentication,)
+
+
+def _strict_verify(access_value):
+    request = APIRequestFactory().get("/")
+    request.COOKIES[POLICY.access_name] = access_value
+    return _StrictVerifyView.as_view()(request)
 
 
 def _refresh(client, refresh_value, csrf_value):
@@ -86,3 +108,72 @@ def test_refresh_for_a_disabled_account_is_rejected_and_burns_the_family(account
     account.is_active = True
     account.save(update_fields=["is_active"])
     assert _refresh(client, refresh_value, csrf_value).status_code == 401
+
+
+# ------------------------------------------------ Group B: C2 (Critical)
+
+
+def test_logout_under_a_denylist_store_is_seen_by_strict_auth(account, settings):
+    """C2's fail-open: login, refresh and logout used one store, the
+    ``Strict*`` classes constructed another, and nothing made them agree.
+    With a denylist store on one side and the ORM on the other, a logout
+    recorded in one was invisible to the liveness check reading the
+    other - the family looked live, forever, to exactly the endpoints that
+    had opted into instant revocation.
+
+    One ``STORE`` setting now feeds every component through
+    ``get_store()``. The ``TokenFamily`` assertion is what proves the
+    configured store is the one actually used: under the old wiring the
+    setting was ignored and every session went to the ORM regardless.
+    Red on revert of ``store = ConfiguredStore()`` on ``RotationPolicy``
+    (back to ``ORMTokenStore()``).
+    """
+    settings.SIGNET = {
+        "STORE": _CACHE_STORE,
+        "STORE_OPTIONS": {"deny_by_default": True},
+    }
+    client = _login()
+    access_value = client.cookies[POLICY.access_name].value
+    assert not TokenFamily.objects.exists()
+    assert _strict_verify(access_value).status_code == 200
+
+    client.post(
+        reverse("django_signet:logout"),
+        **{CSRF_HEADER: client.cookies[POLICY.csrf_name].value},
+    )
+    assert _strict_verify(access_value).status_code == 401
+
+
+def test_changing_the_password_under_a_cache_store_warns_rather_than_blocks(
+    account, settings, caplog
+):
+    """The cache-store variant of ``test_changing_the_password_kills_
+    refresh``, asserting the documented behaviour rather than the ORM one.
+
+    ``revocation.py`` used to hardcode ``ORMTokenStore()``, so under a
+    cache store a password change revoked nothing *and said nothing*: the
+    receiver queried an empty table and returned. ``CacheTokenStore``
+    cannot enumerate a user's families, so it cannot do the revocation -
+    but the ruling is that it must neither block the password save (that
+    would break every password change on a documented configuration) nor
+    fail silently. So: the save goes through, a warning names the gap,
+    and the session the password change could not reach is still live
+    (signet.W007 says so at startup, too). Red on revert of
+    ``get_store()`` in ``revoke_on_password_change``: no warning is
+    logged.
+    """
+    settings.SIGNET = {"STORE": _CACHE_STORE}
+    client = _login()
+    refresh_value = client.cookies[POLICY.refresh_name].value
+    csrf_value = client.cookies[POLICY.csrf_name].value
+
+    with caplog.at_level("WARNING", logger="django_signet.revocation"):
+        account.set_password("a-completely-different-password")
+        account.save()
+
+    account.refresh_from_db()
+    assert account.check_password("a-completely-different-password")
+    assert any("cannot revoke" in record.getMessage() for record in caplog.records), (
+        caplog.text
+    )
+    assert _refresh(client, refresh_value, csrf_value).status_code == 200

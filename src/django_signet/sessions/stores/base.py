@@ -5,7 +5,7 @@ import enum
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 
 class FamilyLike(Protocol):
@@ -95,6 +95,13 @@ class TokenStore(abc.ABC):
     ``False`` unless something was explicitly issued. Same interface,
     opposite default.
     """
+
+    #: ``False`` for an adapter whose ``revoke_all_for_user`` raises
+    #: ``NotImplementedError`` by design. Read by system check signet.W007,
+    #: so the gap is announced at startup; the runtime paths still catch
+    #: the exception itself, so an adapter that forgets to set this fails
+    #: safe rather than crashing.
+    supports_revoke_all_for_user: ClassVar[bool] = True
 
     @abc.abstractmethod
     def open_family(
