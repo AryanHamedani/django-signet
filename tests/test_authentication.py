@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework.test import APIRequestFactory
 
 from django_signet.authentication import (
@@ -150,7 +150,9 @@ def test_every_failure_cause_produces_the_identical_message(pair, user):
         (auth, inactive),
         (strict_auth, revoked),
     ):
-        with pytest.raises(AuthenticationFailed) as exc:
+        # A CSRF failure is a 403 (PermissionDenied), every other cause a
+        # 401 - but the message must not vary with either.
+        with pytest.raises((AuthenticationFailed, PermissionDenied)) as exc:
             authenticator.authenticate(request)
         messages.add(str(exc.value))
 
@@ -208,7 +210,7 @@ def test_unsafe_cookie_request_requires_the_csrf_header(pair):
     auth = CookieJWTAuthentication()
     request = APIRequestFactory().post("/")
     request.COOKIES[auth.transport.policy.access_name] = pair.access.value
-    with pytest.raises(AuthenticationFailed):
+    with pytest.raises(PermissionDenied):
         auth.authenticate(request)
 
 
@@ -229,7 +231,7 @@ def test_unsafe_cookie_request_with_mismatched_csrf_pair_fails(pair):
     request = APIRequestFactory().post("/", **{CSRF_HEADER: "wrong-token"})
     request.COOKIES[auth.transport.policy.access_name] = pair.access.value
     request.COOKIES[auth.transport.policy.csrf_name] = "right-token"
-    with pytest.raises(AuthenticationFailed):
+    with pytest.raises(PermissionDenied):
         auth.authenticate(request)
 
 
@@ -258,7 +260,7 @@ def test_hybrid_cookie_path_requires_csrf_on_unsafe_method(pair):
     auth = HybridJWTAuthentication()
     request = APIRequestFactory().post("/")
     request.COOKIES[auth.transport.policy.access_name] = pair.access.value
-    with pytest.raises(AuthenticationFailed):
+    with pytest.raises(PermissionDenied):
         auth.authenticate(request)
 
 

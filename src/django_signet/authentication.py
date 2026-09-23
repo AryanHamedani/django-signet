@@ -12,10 +12,11 @@ from __future__ import annotations
 from typing import Any
 
 from rest_framework.authentication import BaseAuthentication
-from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 
 from django_signet.csrf import csrf_policy, validate_csrf
 from django_signet.exceptions import (
+    CSRFFailed,
     SignetError,
     TokenRevoked,
     TransportError,
@@ -87,6 +88,16 @@ class BaseJWTAuthentication(BaseAuthentication):
                 self.check_family(claims)
             self.validate_claims(claims)
             user = self.get_user(claims)
+        except CSRFFailed as exc:
+            # 403, not 401, as DRF's SessionAuthentication and this
+            # library's own refresh and logout views answer it: the access
+            # token verified, so a 401 would send the client to refresh a
+            # session that is fine and hide the real fault - a missing or
+            # wrong CSRF header. The body stays GENERIC_FAILURE, and the
+            # check runs after verify, so only the token's holder learns
+            # anything from the status.
+            self.on_authentication_failed(exc)
+            raise PermissionDenied(GENERIC_FAILURE) from None
         except SignetError as exc:
             self.on_authentication_failed(exc)
             raise AuthenticationFailed(GENERIC_FAILURE) from None

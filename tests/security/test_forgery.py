@@ -354,13 +354,15 @@ def _cookie_write(client, **headers):
 
 
 def test_csrf_is_required_for_cookie_authenticated_writes(client):
-    assert _cookie_write(client).status_code == 401
+    # 403, not 401: the access token is valid, only the CSRF check failed -
+    # a 401 would send the client to refresh a session that is fine.
+    assert _cookie_write(client).status_code == 403
     # ...and the same request with the double-submit pair succeeds, so the
-    # 401 above is the CSRF check, not a broken credential.
+    # 403 above is the CSRF check, not a broken credential.
     csrf_value = client.cookies[POLICY.csrf_name].value
     assert _cookie_write(client, **{CSRF_HEADER: csrf_value}).status_code == 200
 
 
 def test_a_forged_csrf_header_is_rejected(client):
     response = _cookie_write(client, **{CSRF_HEADER: "attacker-chosen"})
-    assert response.status_code == 401
+    assert response.status_code == 403
