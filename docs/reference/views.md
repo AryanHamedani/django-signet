@@ -29,8 +29,11 @@ see {doc}`exceptions`.
 
 `TokenVerifyView` is not strict by default. Its `BaseJWTAuthentication`
 checks the access token's signature and expiry, not whether the session
-is still live, so after logout it keeps answering 200 for the old access
-token until that token expires. To have it confirm the session too, list
+is still live. An access token that outlives its session - a header
+client's after logout, or any access token after logout-all from another
+device or a reuse burn - keeps answering 200 until it expires. (A browser
+logout clears the access cookie itself.) To have it confirm the session
+too, list
 a `Strict*` class in `authentication_classes`:
 
 ```python

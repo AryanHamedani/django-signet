@@ -29,6 +29,14 @@ module `django_signet.sessions.models`, on {doc}`sessions`.
 
 ```{eval-rst}
 .. automodule:: django_signet.checks
+
+.. automodule:: django_signet.checks.settings
+   :members:
+
+.. automodule:: django_signet.checks.cookies
+   :members:
+
+.. automodule:: django_signet.checks.urls
    :members:
 ```
 

@@ -7,13 +7,17 @@ base they share, all built from one template method. Source:
 `BaseJWTAuthentication.authenticate()` owns a fixed sequence - extract,
 verify, (maybe) CSRF, (maybe) family liveness, application claims, user
 lookup. A request that carries no credential for the class's transport
-gets `None`, so DRF can try the next authenticator. Every `SignetError`
-after that collapses to the same
-`AuthenticationFailed("Invalid or expired credentials.")`, regardless of
-cause. The distinct exception types (`TokenExpired`, `TokenRevoked`,
-`CSRFFailed`, ...) reach only the `on_authentication_failed` hook, never
-the client, so a response can never be used to enumerate *why* a
-credential failed. No signal is sent on an authentication failure;
+gets `None`, so DRF can try the next authenticator. A failed CSRF check
+raises `PermissionDenied` (403), as DRF's `SessionAuthentication` does:
+the access token verified, so a 401 would send the client to refresh a
+session that is fine. Every other `SignetError` collapses to
+`AuthenticationFailed` (401). Both carry the same body,
+`"Invalid or expired credentials."`, whatever the cause. The distinct
+exception types (`TokenExpired`, `TokenRevoked`, `CSRFFailed`, ...) reach
+only the `on_authentication_failed` hook, never the client, so a response
+can never be used to enumerate *why* a credential failed beyond that one
+status split - and the CSRF check runs after the token verifies, so only
+the token's holder learns anything from it. No signal is sent on an authentication failure;
 override `on_authentication_failed` to react to one.
 
 The six concrete classes differ on exactly two axes:
