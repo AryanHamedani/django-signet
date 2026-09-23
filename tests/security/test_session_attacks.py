@@ -52,36 +52,75 @@ def _login(username="bob", password=PASSWORD):
 def test_stolen_refresh_token_replayed_later_burns_the_family(account, settings):
     """The RFC 9700 scenario. The attacker captures a refresh token; the
     legitimate client rotates first; the attacker replays after the grace
-    window and the whole lineage dies."""
+    window and the whole lineage dies.
+
+    Round-1 fix: every ``refresh`` call below now sends a matching
+    ``CSRF_HEADER`` - refresh is CSRF-protected like every other unsafe
+    endpoint as of this round. The attacker's copy is deliberately taken
+    from the same non-httponly CSRF cookie as the stolen refresh token
+    itself: this test's premise is that the attacker already has raw
+    credential values (a log leak, XSS), which is a strictly stronger
+    position than a cross-site forger who has neither - so giving the
+    attacker a valid double-submit pair here does not weaken the test,
+    it keeps it testing reuse detection rather than accidentally testing
+    the CSRF check this suite now covers separately.
+    """
     settings.SIGNET = {"GRACE_CACHE": None}  # strict mode
     victim = _login()
     stolen = victim.cookies[POLICY.refresh_name].value
+    stolen_csrf = victim.cookies[POLICY.csrf_name].value
 
-    assert victim.post(reverse("django_signet:refresh")).status_code == 200
+    assert (
+        victim.post(
+            reverse("django_signet:refresh"), **{CSRF_HEADER: stolen_csrf}
+        ).status_code
+        == 200
+    )
 
     attacker = APIClient()
     attacker.cookies[POLICY.refresh_name] = stolen
-    assert attacker.post(reverse("django_signet:refresh")).status_code == 401
+    attacker.cookies[POLICY.csrf_name] = stolen_csrf
+    assert (
+        attacker.post(
+            reverse("django_signet:refresh"), **{CSRF_HEADER: stolen_csrf}
+        ).status_code
+        == 401
+    )
 
     family = TokenFamily.objects.get()
     assert family.is_live is False
     assert family.revoked_reason == RevocationReason.REUSE_DETECTED
 
     # and the victim is now locked out too - that is the intended blast radius
-    assert victim.post(reverse("django_signet:refresh")).status_code == 401
+    assert (
+        victim.post(
+            reverse("django_signet:refresh"), **{CSRF_HEADER: _csrf_token(victim)}
+        ).status_code
+        == 401
+    )
 
 
 def test_two_tabs_refreshing_together_do_not_burn_the_family(account):
     """The false-positive that most implementations ship. Both callers must
-    succeed and the session must survive."""
+    succeed and the session must survive.
+
+    Round-1 fix: both tabs send a matching CSRF header. Two tabs of the
+    same browser, on the same origin, can both read the same non-httponly
+    CSRF cookie - that is the whole reason double-submit CSRF works for
+    legitimate same-origin multi-tab use and fails for a cross-site
+    forger, so ``tab_b`` is given the shared CSRF cookie exactly as it is
+    given the shared refresh cookie above.
+    """
     tab_a = _login()
     shared = tab_a.cookies[POLICY.refresh_name].value
+    shared_csrf = tab_a.cookies[POLICY.csrf_name].value
 
     tab_b = APIClient()
     tab_b.cookies[POLICY.refresh_name] = shared
+    tab_b.cookies[POLICY.csrf_name] = shared_csrf
 
-    first = tab_a.post(reverse("django_signet:refresh"))
-    second = tab_b.post(reverse("django_signet:refresh"))
+    first = tab_a.post(reverse("django_signet:refresh"), **{CSRF_HEADER: shared_csrf})
+    second = tab_b.post(reverse("django_signet:refresh"), **{CSRF_HEADER: shared_csrf})
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -108,7 +147,12 @@ def test_a_forged_csrf_header_is_rejected(account):
 def test_a_revoked_session_cannot_be_refreshed(account):
     client = _login()
     TokenFamily.objects.get().revoke(RevocationReason.ADMIN)
-    assert client.post(reverse("django_signet:refresh")).status_code == 401
+    # Round-1 fix: refresh is CSRF-protected now, so a valid header is
+    # needed to reach the revoked-family check this test actually targets.
+    response = client.post(
+        reverse("django_signet:refresh"), **{CSRF_HEADER: _csrf_token(client)}
+    )
+    assert response.status_code == 401
 
 
 def test_disabling_an_account_revokes_access_immediately(account):
@@ -125,7 +169,12 @@ def test_changing_the_password_kills_refresh(account):
     client = _login()
     account.set_password("a-completely-different-password")
     account.save()
-    assert client.post(reverse("django_signet:refresh")).status_code == 401
+    # Round-1 fix: refresh is CSRF-protected now; a valid header is needed
+    # to reach the family-revoked-by-password-change check under test.
+    response = client.post(
+        reverse("django_signet:refresh"), **{CSRF_HEADER: _csrf_token(client)}
+    )
+    assert response.status_code == 401
 
 
 def test_one_users_token_cannot_reach_another_users_session(account, django_user_model):
@@ -188,7 +237,12 @@ def test_a_session_past_its_absolute_lifetime_cannot_be_refreshed(account):
     TokenFamily.objects.filter(user=account).update(
         expires_at=timezone.now() - timedelta(seconds=1)
     )
-    assert client.post(reverse("django_signet:refresh")).status_code == 401
+    # Round-1 fix: refresh is CSRF-protected now; a valid header is needed
+    # to reach the absolute-lifetime check under test.
+    response = client.post(
+        reverse("django_signet:refresh"), **{CSRF_HEADER: _csrf_token(client)}
+    )
+    assert response.status_code == 401
 
 
 def test_an_access_token_presented_as_a_refresh_token_is_rejected(account):
@@ -217,7 +271,12 @@ def test_an_access_token_presented_as_a_refresh_token_is_rejected(account):
     client = _login()
     access_value = client.cookies[POLICY.access_name].value
     client.cookies[POLICY.refresh_name] = access_value
-    assert client.post(reverse("django_signet:refresh")).status_code == 401
+    # Round-1 fix: refresh is CSRF-protected now; a valid header is needed
+    # to reach the store-lookup/`typ` checks under test.
+    response = client.post(
+        reverse("django_signet:refresh"), **{CSRF_HEADER: _csrf_token(client)}
+    )
+    assert response.status_code == 401
 
 
 def test_grace_cache_pointed_at_dummycache_treats_a_benign_replay_as_theft(account):
@@ -253,11 +312,22 @@ def test_grace_cache_pointed_at_dummycache_treats_a_benign_replay_as_theft(accou
     with override_settings(SIGNET={"GRACE_CACHE": "dummy"}):
         tab_a = _login()
         shared = tab_a.cookies[POLICY.refresh_name].value
+        shared_csrf = tab_a.cookies[POLICY.csrf_name].value
         tab_b = APIClient()
         tab_b.cookies[POLICY.refresh_name] = shared
+        tab_b.cookies[POLICY.csrf_name] = shared_csrf
 
-        assert tab_a.post(reverse("django_signet:refresh")).status_code == 200
-        assert tab_b.post(reverse("django_signet:refresh")).status_code == 401
+        # Round-1 fix: refresh is CSRF-protected now; same-origin tabs can
+        # both read the shared, non-httponly CSRF cookie (see the
+        # equivalent note on test_two_tabs_refreshing_together...).
+        first = tab_a.post(
+            reverse("django_signet:refresh"), **{CSRF_HEADER: shared_csrf}
+        )
+        second = tab_b.post(
+            reverse("django_signet:refresh"), **{CSRF_HEADER: shared_csrf}
+        )
+        assert first.status_code == 200
+        assert second.status_code == 401
         assert TokenFamily.objects.get().is_live is False
 
 
@@ -331,3 +401,86 @@ def test_revoking_a_family_does_not_invalidate_an_already_issued_access_token(ac
 
     # Strict verify, same token, same revoked family: rejected.
     assert _strict_request(access_token).status_code == 401
+
+
+# ---------------------------------------------- round-1 review fix: refresh CSRF
+
+
+def _csrf_token(client: APIClient) -> str:
+    return str(client.cookies[POLICY.csrf_name].value)
+
+
+def test_refresh_without_a_csrf_header_is_rejected(account):
+    """Round-1 finding: ``TokenRefreshView`` previously ran no CSRF check
+    at all. ``authentication_classes = ()`` on that view means
+    ``BaseJWTAuthentication._enforce_csrf_if_needed`` - the only call site
+    of ``validate_csrf`` before this fix - never runs for it, even though
+    the refresh cookie is exactly as ambient (browser-attached) as the
+    access cookie every other unsafe endpoint protects. Under
+    ``COOKIE_SAMESITE=None`` (a legitimate cross-origin-SPA configuration
+    this library accepts without complaint) that made refresh completely
+    forgeable cross-site - see the two tests below for the actual blast
+    radius. Fixed by ``TokenRefreshView.refresh_is_ambient`` plus an
+    explicit ``validate_csrf`` call in ``views.py``, run before the token
+    is ever redeemed.
+    """
+    client = _login()
+    assert client.post(reverse("django_signet:refresh")).status_code == 403
+
+
+def test_refresh_with_a_forged_csrf_header_is_rejected(account):
+    """Companion to the missing-header case above: a header present but
+    not matching the double-submit cookie must fail exactly the same way
+    logout already does for ``test_a_forged_csrf_header_is_rejected``."""
+    client = _login()
+    response = client.post(
+        reverse("django_signet:refresh"), **{CSRF_HEADER: "attacker-chosen"}
+    )
+    assert response.status_code == 403
+
+
+def test_refresh_with_a_matching_csrf_header_succeeds(account):
+    """The happy path this fix must not break: a real client that read the
+    CSRF cookie and echoed it back still rotates normally."""
+    client = _login()
+    response = client.post(
+        reverse("django_signet:refresh"), **{CSRF_HEADER: _csrf_token(client)}
+    )
+    assert response.status_code == 200
+
+
+def test_a_csrf_rejected_refresh_does_not_clear_cookies(account):
+    """Pins the subtle half of the fix. ``failure()`` calls
+    ``self.transport.clear()``, which is correct for a genuinely bad
+    credential - it can never be used again anyway - but a failed CSRF
+    check says nothing about whether the credential itself is still good.
+    If a CSRF rejection cleared cookies the same way, the check would
+    become a logout oracle: any cross-site page could force a legitimate,
+    still-logged-in user's session to be wiped with a single
+    unauthenticated forged POST, no token theft required - the exact
+    denial-of-service this fix exists to close, reintroduced through the
+    fix itself. Verified by mutation: swapping ``self.csrf_failure()`` for
+    ``self.failure()`` at the CSRF branch in ``TokenRefreshView.post()``
+    turns this red - the refresh cookie comes back cleared, and the
+    legitimate follow-up refresh at the end of this test then fails too,
+    because the client's own cookie jar now holds the wiped value.
+    """
+    client = _login()
+
+    response = client.post(
+        reverse("django_signet:refresh"), **{CSRF_HEADER: "attacker-chosen"}
+    )
+    assert response.status_code == 403
+    # failure() would Set-Cookie every credential to an empty, max-age=0
+    # value; none of that may happen here.
+    assert POLICY.refresh_name not in response.cookies
+    assert POLICY.access_name not in response.cookies
+    assert POLICY.csrf_name not in response.cookies
+
+    # The original refresh token was never touched either: a legitimate
+    # follow-up request, using the same still-live session, still works.
+    ok = client.post(
+        reverse("django_signet:refresh"), **{CSRF_HEADER: _csrf_token(client)}
+    )
+    assert ok.status_code == 200
+    assert TokenFamily.objects.get().is_live is True

@@ -62,7 +62,13 @@ def test_unknown_username_and_wrong_password_are_indistinguishable(client, accou
 def test_refresh_rotates_the_cookies(client, account):
     _login(client)
     before = client.cookies[POLICY.refresh_name].value
-    response = client.post(reverse("django_signet:refresh"))
+    # Round-1 security-review fix: refresh is CSRF-protected now (see
+    # tests/security/test_session_attacks.py), so a matching header is
+    # needed to reach the rotation this test actually checks.
+    response = client.post(
+        reverse("django_signet:refresh"),
+        **{CSRF_HEADER: client.cookies[POLICY.csrf_name].value},
+    )
     assert response.status_code == 200
     assert client.cookies[POLICY.refresh_name].value != before
 
@@ -83,8 +89,14 @@ def test_a_failed_refresh_clears_the_cookies(client, account):
     here. Assert both the max-age and the path together.
     """
     _login(client)
+    csrf_token = client.cookies[POLICY.csrf_name].value
     client.cookies[POLICY.refresh_name] = "not-a-real-token"
-    response = client.post(reverse("django_signet:refresh"))
+    # Round-1 security-review fix: refresh is CSRF-protected now; a
+    # matching header is needed to reach the invalid-credential path this
+    # test actually checks, rather than being turned away by CSRF first.
+    response = client.post(
+        reverse("django_signet:refresh"), **{CSRF_HEADER: csrf_token}
+    )
     assert response.status_code == 401
     assert response.cookies[POLICY.access_name]["max-age"] == 0
     assert response.cookies[POLICY.access_name]["path"] == "/"

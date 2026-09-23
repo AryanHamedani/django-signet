@@ -187,7 +187,20 @@ def test_extra_claims_cannot_overwrite_the_subject(account):
 
 def test_login_sets_every_required_cookie_flag(account):
     """Browser-enforced contract. A wrong flag fails silently in production,
-    so assert it explicitly."""
+    so assert it explicitly.
+
+    Round-1 review fix: the original version of this test asserted
+    ``httponly``/``secure``/``path`` on the access and refresh cookies but
+    never touched ``refresh["samesite"]``, or any flag on the CSRF cookie
+    at all (``secure``, ``samesite``, ``path``) - despite the docstring
+    claiming "every required" flag and despite ``CookiePolicy``'s own
+    class docstring naming the CSRF cookie's ``__Host-``/``__Secure-``
+    prefixing and its flags as the cookie-tossing defence. Deleting
+    ``samesite=p.samesite`` from the refresh ``set_cookie`` in
+    ``transport/cookie.py``, or ``secure=policy.secure`` /
+    ``samesite=policy.samesite`` from ``issue_csrf`` in ``csrf.py``, left
+    this test fully green. Now covered.
+    """
     c = APIClient()
     response = c.post(
         reverse("django_signet:login"),
@@ -203,11 +216,16 @@ def test_login_sets_every_required_cookie_flag(account):
     assert refresh["httponly"] is True
     assert refresh["secure"] is True
     assert access["samesite"] == "Lax"
+    assert refresh["samesite"] == "Lax"
     assert access["path"] == "/"
     assert refresh["path"] == POLICY.refresh_path
     assert csrf["httponly"] == ""  # must stay readable for double-submit
+    assert csrf["secure"] is True
+    assert csrf["samesite"] == "Lax"
+    assert csrf["path"] == "/"
     assert POLICY.access_name.startswith("__Host-")
     assert POLICY.refresh_name.startswith("__Secure-")
+    assert POLICY.csrf_name.startswith("__Host-")
 
 
 def test_error_bodies_never_disclose_the_reason(account):

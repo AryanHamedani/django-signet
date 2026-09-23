@@ -11,13 +11,14 @@ from django_signet.authentication import (
     GENERIC_FAILURE,
     CookieJWTAuthentication,
 )
-from django_signet.csrf import issue_csrf
-from django_signet.exceptions import SignetError, TransportError
+from django_signet.csrf import issue_csrf, validate_csrf
+from django_signet.exceptions import CSRFFailed, SignetError, TransportError
 from django_signet.models import RevocationReason
 from django_signet.serializers import TokenObtainSerializer
 from django_signet.sessions.rotation import RotationPolicy
 from django_signet.signals import token_issued, token_refreshed
 from django_signet.transport.cookie import CookieTransport
+from django_signet.transport.header import HybridTransport
 
 
 class SignetViewMixin:
@@ -51,6 +52,28 @@ class SignetViewMixin:
         )
         self.transport.clear(response)
         return response
+
+    def csrf_failure(self) -> Response:
+        """A failed double-submit check, not a bad credential.
+
+        Deliberately does NOT call ``self.transport.clear(response)``. The
+        caller may be holding a perfectly valid refresh token - only the
+        CSRF proof failed - and clearing cookies here would turn a failed
+        CSRF check into a logout oracle: a cross-site page could force a
+        legitimate user's cookies to be wiped with a single unauthenticated
+        POST, no token theft required. ``failure()`` clears cookies because
+        an invalid/expired/reused *credential* genuinely can't be used
+        again anyway; a missing or forged CSRF header says nothing about
+        whether the credential itself is still good, so it must survive.
+        403, not 401: this is a distinct, intentionally-observable signal
+        from "no valid credential" - REST convention for "you're allowed to
+        be here, but this specific safety check failed" - and every
+        response body in this library already collapses to the same
+        ``GENERIC_FAILURE`` string regardless of cause, so the status code
+        alone carries no more information than "an authenticated write was
+        blocked", not which check blocked it.
+        """
+        return Response({"detail": GENERIC_FAILURE}, status=status.HTTP_403_FORBIDDEN)
 
 
 class TokenObtainView(SignetViewMixin, APIView):
@@ -88,11 +111,48 @@ class TokenRefreshView(SignetViewMixin, APIView):
     authentication_classes = ()
     permission_classes = (AllowAny,)
 
+    def refresh_is_ambient(self, request: Any) -> bool:
+        """Whether *this* request's refresh credential arrived as a cookie
+        the browser attached on its own, rather than a header the client
+        set explicitly - the same ambient/non-ambient distinction
+        ``BaseJWTAuthentication.should_enforce_csrf`` makes for the access
+        token, applied here to the refresh token this view actually reads.
+
+        Not ``HybridTransport.used_cookie()``: that helper checks for the
+        *access* cookie, which is what the authenticator's own CSRF
+        decision needs. This view never touches the access token at all,
+        so the right question is whether the refresh credential itself
+        came from ``self.transport.cookie`` - checked directly rather than
+        reusing a helper that would silently answer a different question.
+        """
+        transport = self.transport
+        if isinstance(transport, HybridTransport):
+            try:
+                transport.cookie.extract_refresh(request)
+            except TransportError:
+                return False
+            return True
+        return transport.is_ambient
+
     def post(self, request: Any) -> Response:
         try:
             raw = self.transport.extract_refresh(request)
         except TransportError:
             return self.failure()
+
+        # Ambient credentials (a cookie the browser attaches on its own)
+        # are exactly what makes CSRF possible; a header a client set
+        # explicitly can't be forged by a third-party page the same way.
+        # This runs before the token is ever redeemed: a request that
+        # fails this check must not be able to consume - and thereby burn
+        # the grace window on, or trigger reuse detection against - a
+        # refresh token it was never entitled to present.
+        if self.refresh_is_ambient(request):
+            try:
+                validate_csrf(request, self.transport.policy)
+            except CSRFFailed:
+                return self.csrf_failure()
+
         try:
             pair = self.rotation.rotate(raw)
         except SignetError:
