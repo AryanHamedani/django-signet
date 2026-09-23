@@ -56,3 +56,9 @@ design flaw demands it, and every such change is listed here.
   session stayed live), and a raising `token_issued` receiver turned a
   successful login into a 500. Decisions belong in hooks
   (`on_reuse_detected`, `on_authentication_failed`), which are unchanged.
+- System check `signet.E010` now reports *any* exception raised while
+  building the configured store - a store constructor rejecting its
+  `STORE_OPTIONS` with `ValueError`, say - naming the exception's type and
+  message. Previously only `ImportError` and `TypeError` were converted and
+  anything else crashed `manage.py check`. `get_store()` itself still
+  raises at runtime.

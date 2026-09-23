@@ -39,6 +39,12 @@ def get_store() -> TokenStore:
     passed to its constructor as keyword arguments, in the same shape as
     Django's own ``CACHES[...]["OPTIONS"]``.
 
+    ``ImportError`` and ``TypeError`` (an unimportable path, a constructor
+    that does not accept ``STORE_OPTIONS``) become ``ImproperlyConfigured``;
+    anything else the constructor raises propagates unchanged, so a broken
+    store fails loudly where it is used. System check signet.E010 reports
+    every one of them at startup instead of raising.
+
     Nothing is cached, matching every other ``setting()``: stores hold no
     per-request state and are cheap to build, and resolving afresh is what
     lets ``override_settings`` work.
@@ -50,7 +56,8 @@ def get_store() -> TokenStore:
     except (ImportError, TypeError) as exc:
         raise ImproperlyConfigured(
             f"SIGNET['STORE'] = {cfg.store!r} with STORE_OPTIONS = "
-            f"{cfg.options!r} could not be constructed: {exc}"
+            f"{cfg.options!r} could not be constructed: "
+            f"{type(exc).__name__}: {exc}"
         ) from exc
     if not isinstance(store, TokenStore):
         raise ImproperlyConfigured(

@@ -1,4 +1,5 @@
 import pytest
+from django.core.checks import run_checks
 from django.test import override_settings
 
 from django_signet.checks import (
@@ -12,6 +13,8 @@ from django_signet.checks import (
     check_signing_key,
     check_token_store,
 )
+from django_signet.sessions.stores.factory import get_store
+from django_signet.sessions.stores.orm import ORMTokenStore
 
 
 @override_settings(DEBUG=False, SIGNET={"COOKIE_SECURE": False})
@@ -306,3 +309,34 @@ def test_javascript_readable_auth_cookies_warn():
 
 def test_httponly_auth_cookies_are_quiet():
     assert check_cookie_httponly(None) == []
+
+
+# ------------------------------------------- signet.E010: a store that raises
+
+
+class _StoreRejectingItsOptions(ORMTokenStore):
+    """A third-party store that validates ``STORE_OPTIONS`` itself and
+    raises ``ValueError`` for a bad one - as any constructor may."""
+
+    def __init__(self, **options):
+        raise ValueError(f"shards must be positive, got {options['shards']!r}")
+
+
+@override_settings(
+    SIGNET={"STORE": _StoreRejectingItsOptions, "STORE_OPTIONS": {"shards": -1}}
+)
+def test_a_store_whose_constructor_raises_is_reported_not_raised():
+    """L2: only ``ImportError`` and ``TypeError`` were converted, so any
+    other constructor exception escaped the check and crashed
+    ``manage.py check`` - the one thing a check must never do. It is
+    reported as signet.E010, naming the exception's type and message; at
+    runtime ``get_store()`` still raises it, so a broken store fails loudly
+    when used."""
+    messages = check_token_store(None)
+
+    assert [m.id for m in messages] == ["signet.E010"]
+    assert "ValueError" in messages[0].msg
+    assert "shards must be positive, got -1" in messages[0].msg
+    assert "signet.E010" in [m.id for m in run_checks(tags=["signet"])]
+    with pytest.raises(ValueError, match="shards must be positive"):
+        get_store()
