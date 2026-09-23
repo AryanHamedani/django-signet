@@ -62,15 +62,55 @@ def test_extra_claims_are_merged_but_cannot_overwrite_reserved_ones():
     assert claims["sub"] == "42"
 
 
-def test_a_correctly_signed_token_missing_sub_is_rejected():
+@pytest.mark.parametrize("reserved_claim", ["sub", "typ", "jti", "iat", "nbf", "exp"])
+def test_reserved_claims_are_unforgeable_via_extra(reserved_claim):
+    """With the reserved-last merge in ``build_claims``, this is
+    documentation of the guarantee rather than the thing establishing it -
+    the merge itself (``{**(extra or {}), **reserved}``) makes forgery
+    structural, not merely untested today.
+    """
+    minted = AccessToken().mint(subject="42", extra={reserved_claim: "forged"})
+    claims = AccessToken().verify(minted.value)
+    assert claims[reserved_claim] != "forged"
+
+
+def test_minted_token_repr_does_not_leak_the_credential():
+    """``MintedToken`` is a frozen dataclass; without ``repr=False`` on
+    ``value`` and ``claims``, a stray ``logger.info(minted)`` or an
+    exception traceback holding one would print the raw token and its full
+    claim set.
+    """
+    minted = AccessToken().mint(subject="42")
+    text = repr(minted)
+    assert minted.value not in text
+    assert "value=" not in text
+    assert "claims=" not in text
+    assert "jti=" in text  # non-secret fields still show, proving this isn't repr=()
+
+
+def test_a_correctly_signed_token_missing_sub_and_jti_is_rejected():
     """The signing backend only requires ``exp``, so a correctly-signed
-    token missing ``sub`` (or ``jti``) passes the crypto layer intact. It
+    token missing ``sub`` and ``jti`` passes the crypto layer intact. It
     must still be rejected here, at ``verify()``, rather than reaching a
     caller and blowing up as a ``KeyError`` - a 500 where a 401 belongs.
 
     Built by signing a claim dict directly through the backend, bypassing
-    ``mint()`` entirely, since ``mint()`` always sets ``sub``.
+    ``mint()`` entirely, since ``mint()`` always sets both.
     """
     raw = get_backend().sign({"typ": "access", "exp": int(time.time()) + 60})
+    with pytest.raises(TokenInvalid):
+        AccessToken().verify(raw)
+
+
+def test_a_correctly_signed_token_missing_only_jti_is_rejected():
+    """``sub`` present, ``jti`` absent - the case the both-missing test above
+    cannot exercise, since ``"sub" not in claims or "jti" not in claims``
+    short-circuits on the first operand and never evaluates the second when
+    both are missing. Without this case, a mistyped or deleted ``jti`` half
+    of that check would go undetected.
+    """
+    raw = get_backend().sign(
+        {"sub": "42", "typ": "access", "exp": int(time.time()) + 60}
+    )
     with pytest.raises(TokenInvalid):
         AccessToken().verify(raw)
