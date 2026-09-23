@@ -7,13 +7,14 @@ from django_signet.models import RevocationReason, TokenFamily
 from django_signet.sessions.rotation import RotationPolicy
 from django_signet.sessions.stores.cache import CacheTokenStore
 from django_signet.tokens.access import AccessToken
-from django_signet.transport.cookie import CookiePolicy
+from django_signet.transport.cookie import CookiePolicy, CookieTransport
 from django_signet.transport.header import HeaderTransport
 from django_signet.views import (
     LogoutAllView,
     LogoutView,
     TokenObtainView,
     TokenRefreshView,
+    TokenVerifyView,
 )
 
 pytestmark = pytest.mark.django_db
@@ -296,3 +297,53 @@ def test_a_header_transport_client_logs_out_with_its_refresh_token(account):
     response = _HeaderLogoutView.as_view()(request)
     assert response.status_code == 200
     assert TokenFamily.objects.get().is_live is False
+
+
+# ------------------------------------------- final review, Group D: I1, I3
+
+ADM_POLICY = CookiePolicy(prefix="adm")
+
+
+class _AdmLoginView(TokenObtainView):
+    transport = CookieTransport(ADM_POLICY)
+
+
+class _AdmVerifyView(TokenVerifyView):
+    transport = CookieTransport(ADM_POLICY)
+
+
+def test_verify_authenticates_through_its_own_transport(account):
+    """I1: ``TokenVerifyView`` hardcoded ``CookieJWTAuthentication``, which
+    reads the *default* cookie names - so a project that customised the
+    login view's ``CookiePolicy`` got a 401 from verify for a perfectly
+    good session. The view's authenticators are now bound to the view's
+    own transport. Red on revert of ``TokenVerifyView.get_authenticators``.
+    """
+    factory = APIRequestFactory()
+    login = _AdmLoginView.as_view()(
+        factory.post("/", {"username": "bob", "password": PASSWORD}, format="json")
+    )
+    request = factory.get("/")
+    request.COOKIES[ADM_POLICY.access_name] = login.cookies[
+        ADM_POLICY.access_name
+    ].value
+    assert _AdmVerifyView.as_view()(request).status_code == 200
+
+
+class _HeaderLoginView(TokenObtainView):
+    transport = HeaderTransport()
+
+
+def test_header_transport_on_a_plain_login_view_works(account):
+    """I3, exactly as the migration guide recommends it: ``transport =
+    HeaderTransport()`` on the login view. ``set_cookies`` assumed every
+    transport carries a CSRF policy and raised ``AttributeError`` - a
+    500. The CSRF cookie is now issued only for an ambient transport."""
+    response = _HeaderLoginView.as_view()(
+        APIRequestFactory().post(
+            "/", {"username": "bob", "password": PASSWORD}, format="json"
+        )
+    )
+    assert response.status_code == 200
+    assert {"access", "refresh"} <= set(response.data)
+    assert not response.cookies

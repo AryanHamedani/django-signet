@@ -103,36 +103,41 @@ as the Bearer credential to a logout view whose `transport` is
 ## Polymorphism
 
 Everything is a class you subclass, and DRF resolves authentication per view,
-so several auth behaviours coexist in one project:
+so several auth behaviours coexist in one project.
+
+### A realm: configure once
+
+The unit of configuration is a *realm* — one `SignetViewMixin` subclass that
+declares the transport, the rotation policy and any hooks. `signet_urls()`
+turns it into all five endpoints at once, so login, refresh, verify and
+logout cannot disagree about which cookies they read or which claims they
+mint:
 
 ```python
-# One shared policy, reused by the authentication class and the views that
-# issue cookies - a custom prefix and a custom refresh path both have to
-# agree everywhere, or the browser silently withholds one of the cookies.
-STAFF_COOKIES = CookiePolicy(
-    prefix="adm",
-    samesite="Strict",
-    # The refresh cookie is path-scoped (see CookiePolicy's docstring). If
-    # the staff endpoints below live under a different URL prefix than the
-    # library default ("/api/auth/refresh"), this must match wherever
-    # StaffRefreshView is actually mounted, or a real browser will never
-    # send the refresh cookie to it.
-    refresh_path="/api/auth/staff/refresh",
-)
+from django_signet.authentication import StrictCookieJWTAuthentication
+from django_signet.transport.cookie import CookiePolicy, CookieTransport
+from django_signet.urls import signet_urls
+from django_signet.views import SignetViewMixin
+
+
+class StaffRealm(SignetViewMixin):
+    transport = CookieTransport(
+        CookiePolicy(
+            prefix="adm",
+            samesite="Strict",
+            # The refresh cookie must reach refresh, logout and logout-all,
+            # so its path is the prefix the realm is mounted at (below).
+            # signet.E008 fails startup if the two ever disagree.
+            refresh_path="/api/auth/staff/",
+        )
+    )
+
+    def get_claims(self, user):  # minted at login *and* on every refresh
+        return {"staff": True}
 
 
 class StaffAuth(StrictCookieJWTAuthentication):  # instant revocation
-    transport = CookieTransport(STAFF_COOKIES)
-
-
-class StaffLoginView(TokenObtainView):
-    """Issues the adm-prefixed cookies StaffAuth expects."""
-
-    transport = CookieTransport(STAFF_COOKIES)
-
-
-class StaffRefreshView(TokenRefreshView):
-    transport = CookieTransport(STAFF_COOKIES)
+    transport = StaffRealm.transport  # the same object, not a copy
 
 
 class PaymentViewSet(ModelViewSet):
@@ -140,56 +145,75 @@ class PaymentViewSet(ModelViewSet):
 
 
 urlpatterns = [
-    path("api/auth/staff/login", StaffLoginView.as_view()),
-    path("api/auth/staff/refresh", StaffRefreshView.as_view()),
+    path("api/auth/", include("django_signet.urls")),  # the default realm
+    path("api/auth/staff/", include(signet_urls(StaffRealm, namespace="staff"))),
     path("api/payments/", PaymentViewSet.as_view({"get": "list"})),
 ]
 ```
 
-`StaffAuth` alone only verifies cookies - something has to issue `adm-`-prefixed
-cookies in the first place, or every request under `PaymentViewSet` gets a
-silent 401. `StaffLoginView` and `StaffRefreshView` are that something: plain
-subclasses of the same views the default `django_signet.urls` wires up,
-pointed at the same `CookiePolicy` `StaffAuth` verifies against.
+`reverse("staff:login")`, `staff:refresh`, `staff:verify`, `staff:logout`
+and `staff:logout-all` are the realm's endpoints. The stock `verify` view
+authenticates through its own view's transport, so the staff realm's verify
+reads the `adm-` cookies without being told to.
+
+There is no `cookie_policy` attribute on the authentication or view classes
+(an early design sketch showed one; assigning it would silently do nothing).
+Cookies are configured by giving a realm — or a single view or
+authentication class — a `transport = CookieTransport(CookiePolicy(...))`.
+
+A realm for mobile or service clients is the same thing with a different
+transport. Tokens travel in the response body and in `Authorization:
+Bearer`, no cookies are set and CSRF never applies:
+
+```python
+class MobileRealm(SignetViewMixin):
+    transport = HeaderTransport()
+
+
+urlpatterns += [
+    path("api/mobile/", include(signet_urls(MobileRealm, namespace="mobile")))
+]
+```
+
+Log in, refresh with `Authorization: Bearer <refresh>`, verify with
+`Authorization: Bearer <access>`, and log out by presenting the *refresh*
+token.
+
+### Hooks
 
 Token lifetime is a property of the token class a view mints, not of the
 authentication class that later verifies it — so a shorter-lived access
-token for one part of the API is a `RotationPolicy` override on the view,
-not an attribute on `CookieJWTAuthentication`:
+token is a `RotationPolicy` override on the realm, not an attribute on
+`CookieJWTAuthentication`:
 
 ```python
 class ShortLivedAccessToken(AccessToken):
     lifetime = timedelta(minutes=2)
 
 
-class CustomerLogin(TokenObtainView):
-    class _Rotation(RotationPolicy):
-        access_token_class = ShortLivedAccessToken
+class ShortLivedRotation(RotationPolicy):
+    access_token_class = ShortLivedAccessToken
 
-    rotation = _Rotation()
-```
+    def on_reuse_detected(self, family):
+        notify_security_team(family.user)
 
-Add claims, react to security events, or change the cookies by overriding a
-method:
 
-```python
-class LoginView(TokenObtainView):
+class CustomerRealm(SignetViewMixin):
+    rotation = ShortLivedRotation()
+
     def get_claims(self, user):
         return {"org": user.org_id}
-
-
-class RefreshView(TokenRefreshView):
-    class _Rotation(RotationPolicy):
-        def on_reuse_detected(self, family):
-            notify_security_team(family.user)
-
-    rotation = _Rotation()
 ```
 
 (`rotation` must be an *instance*, matching `SignetViewMixin`'s own
 `rotation = RotationPolicy()` — assigning the class itself, without
 instantiating it, leaves `self.rotation.rotate(...)` calling an unbound
 method and raising `TypeError`.)
+
+Define `get_claims` on the realm rather than on a single view: it runs at
+login and again on every refresh, with the user freshly loaded from the
+refresh token, so a claim defined only on a login view would vanish from the
+access token after the first refresh.
 
 ## Security model
 

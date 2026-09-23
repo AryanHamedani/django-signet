@@ -4,29 +4,35 @@ from contextlib import suppress
 from typing import Any
 
 from rest_framework import status
+from rest_framework.authentication import BaseAuthentication
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from django_signet.authentication import (
-    GENERIC_FAILURE,
-    CookieJWTAuthentication,
-)
-from django_signet.csrf import issue_csrf, validate_csrf
+from django_signet.authentication import GENERIC_FAILURE, BaseJWTAuthentication
+from django_signet.csrf import csrf_policy, issue_csrf, validate_csrf
 from django_signet.exceptions import CSRFFailed, SignetError, TransportError
 from django_signet.models import RevocationReason
 from django_signet.serializers import TokenObtainSerializer
 from django_signet.sessions.rotation import RotationPolicy
 from django_signet.signals import token_issued, token_refreshed
+from django_signet.transport.base import Transport
 from django_signet.transport.cookie import CookieTransport
 from django_signet.transport.header import HybridTransport
 
 
 class SignetViewMixin:
-    """Shared plumbing. ``transport`` and ``rotation`` are class attributes so
-    a subclass can swap either without touching project settings."""
+    """Shared plumbing, and the unit of configuration: a *realm*.
 
-    transport = CookieTransport()
+    ``transport`` and ``rotation`` are class attributes so a subclass can
+    swap either without touching project settings, and every hook below is
+    a method a subclass can override. A subclass of this mixin, handed to
+    :func:`django_signet.urls.signet_urls`, becomes all five endpoints at
+    once - so login, refresh, verify and logout share one transport, one
+    rotation policy and one ``get_claims``, and cannot drift apart.
+    """
+
+    transport: Transport = CookieTransport()
     rotation = RotationPolicy()
 
     def get_claims(self, user: Any) -> dict[str, Any]:
@@ -47,8 +53,13 @@ class SignetViewMixin:
         return {"authenticated": True}
 
     def set_cookies(self, response: Any, pair: Any) -> None:
+        """Write the pair through the transport, plus a CSRF cookie - but
+        only for an ambient transport. A header credential cannot be
+        forged cross-site, so it needs no CSRF token, and a transport that
+        sets no cookies has no policy to issue one with."""
         self.transport.attach(response, pair)
-        issue_csrf(response, self.transport.policy)
+        if self.transport.is_ambient:
+            issue_csrf(response, csrf_policy(self.transport))
 
     def client_ip(self, request: Any) -> str | None:
         ip: str | None = request.META.get("REMOTE_ADDR")
@@ -171,7 +182,7 @@ class RefreshCredentialView(SignetViewMixin, APIView):
         """
         raw = self.transport.extract_refresh(request)
         if self.refresh_is_ambient(request):
-            validate_csrf(request, self.transport.policy)
+            validate_csrf(request, csrf_policy(self.transport))
         return raw
 
     def signed_out(self, detail: str) -> Response:
@@ -208,8 +219,26 @@ class TokenRefreshView(RefreshCredentialView):
 
 
 class TokenVerifyView(SignetViewMixin, APIView):
-    authentication_classes = (CookieJWTAuthentication,)
+    authentication_classes: tuple[type[BaseAuthentication], ...] = (
+        BaseJWTAuthentication,
+    )
     permission_classes = (IsAuthenticated,)
+
+    def get_authenticators(self) -> list[BaseAuthentication]:
+        """Every Signet authenticator this view lists is bound to the
+        view's *own* transport, so verify reads exactly the credential this
+        realm's login issued. ``authentication_classes`` still chooses the
+        behaviour - ``StrictCookieJWTAuthentication`` for a liveness check,
+        a subclass with its own ``validate_claims`` - but never a second,
+        independently configured transport. A non-Signet authenticator is
+        instantiated as DRF would.
+        """
+        return [
+            auth(transport=self.transport)
+            if issubclass(auth, BaseJWTAuthentication)
+            else auth()
+            for auth in self.authentication_classes
+        ]
 
     def get(self, request: Any) -> Response:
         return Response({"authenticated": True, "user_id": request.user.pk})

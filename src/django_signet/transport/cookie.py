@@ -137,6 +137,10 @@ class CookieTransport(Transport):
     def is_ambient(self) -> bool:
         return True
 
+    @property
+    def cookie_policy(self) -> CookiePolicy:
+        return self.policy
+
     def _read(self, request: Any, name: str) -> str:
         token = request.COOKIES.get(name)
         if not token:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import abc
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from django_signet.transport.cookie import CookiePolicy
 
 
 class Transport(abc.ABC):
@@ -41,3 +44,15 @@ class Transport(abc.ABC):
         keys off this rather than off the class name.
         """
         return False
+
+    @property
+    def cookie_policy(self) -> CookiePolicy | None:
+        """The cookie naming and flags this transport writes with, or
+        ``None`` for a transport that sets no cookies.
+
+        Everything that needs a policy - issuing and validating the CSRF
+        cookie, the refresh-path system check - asks this, polymorphically,
+        instead of assuming every transport has one. That assumption once
+        made ``HeaderTransport`` on a login view a 500.
+        """
+        return None

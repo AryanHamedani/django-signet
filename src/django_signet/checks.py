@@ -28,6 +28,7 @@ two different functions.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from django.conf import settings
@@ -35,9 +36,11 @@ from django.core.cache import InvalidCacheBackendError, caches
 from django.core.checks import CheckMessage, Error
 from django.core.checks import Warning as CheckWarning
 from django.core.exceptions import ImproperlyConfigured
+from django.urls import NoReverseMatch, URLResolver, get_resolver, reverse
 
 from django_signet.conf import DEFAULTS
 from django_signet.sessions.stores.factory import get_store
+from django_signet.views import RefreshCredentialView
 
 
 def _raw_signet() -> Any:
@@ -267,6 +270,64 @@ def check_token_store(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
     ]
 
 
+def _named_views(
+    resolver: URLResolver, namespaces: tuple[str, ...] = ()
+) -> Iterator[tuple[str, Any]]:
+    """Every named, class-based route in the URLconf, as
+    ``(qualified_name, view_class)``."""
+    for entry in resolver.url_patterns:
+        if isinstance(entry, URLResolver):
+            nested = (*namespaces, entry.namespace) if entry.namespace else namespaces
+            yield from _named_views(entry, nested)
+        elif entry.name and hasattr(entry.callback, "view_class"):
+            yield ":".join((*namespaces, entry.name)), entry.callback.view_class
+
+
+def _refresh_path_error(name: str, view_class: Any) -> CheckMessage | None:
+    if not (
+        isinstance(view_class, type) and issubclass(view_class, RefreshCredentialView)
+    ):
+        return None
+    policy = view_class.transport.cookie_policy
+    if policy is None:
+        return None  # a header transport sets no cookie to scope
+    try:
+        url = reverse(name)
+    except NoReverseMatch:
+        return None  # a route that needs arguments has no single URL
+    if url.startswith(policy.refresh_path):
+        return None
+    return Error(
+        f"{view_class.__name__} is mounted at {url!r}, outside its refresh "
+        f"cookie's path {policy.refresh_path!r}.",
+        hint="A browser only sends a cookie to URLs under its Path, so "
+        "refresh, logout and logout-all would never receive the refresh "
+        "cookie - refresh fails and logout cannot revoke, with no error. "
+        "Set COOKIE_REFRESH_PATH (or the realm's CookiePolicy refresh_path) "
+        "to the prefix the auth URLs are mounted at.",
+        id="signet.E008",
+    )
+
+
+def check_refresh_cookie_path(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
+    """Every mounted endpoint that reads the refresh cookie must sit under
+    that cookie's ``Path``.
+
+    Walks the real URLconf rather than trusting the default mount point,
+    so it covers ``django_signet.urls`` mounted anywhere and every realm
+    built with ``signet_urls()``. Mounting at ``/auth/`` with the default
+    ``/api/auth/`` path is caught here, at startup, instead of surfacing as
+    silent refresh failures in production.
+    """
+    if not getattr(settings, "ROOT_URLCONF", None):
+        return []
+    found = (
+        _refresh_path_error(name, view_class)
+        for name, view_class in _named_views(get_resolver())
+    )
+    return [error for error in found if error is not None]
+
+
 ALL_CHECKS = (
     check_signet_setting_shape,
     check_setting_types,
@@ -275,4 +336,5 @@ ALL_CHECKS = (
     check_grace_cache,
     check_signing_key,
     check_token_store,
+    check_refresh_cookie_path,
 )
