@@ -39,7 +39,10 @@ def revoke_on_password_change(sender: Any, instance: Any, **_kwargs: Any) -> Non
     the right trade-off - refusing the save is safer than letting a password
     change succeed while silently leaving old sessions live - but it means a
     transient store failure surfaces as a failed password change rather than
-    a background/logged warning, which is worth knowing going in.
+    a background/logged warning, which is worth knowing going in. A
+    ``family_revoked`` receiver that raises is not such a failure: signals
+    go through :func:`django_signet.signals.send`, which logs and ignores
+    it, so every family is still revoked and the save goes through.
 
     The one exception to fail-closed is a store that *cannot* revoke by
     user at all - ``CacheTokenStore``, whose ``revoke_all_for_user`` raises

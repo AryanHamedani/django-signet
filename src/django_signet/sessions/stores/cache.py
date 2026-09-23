@@ -15,7 +15,7 @@ from django_signet.sessions.stores.base import (
     TokenLike,
     TokenStore,
 )
-from django_signet.signals import family_revoked
+from django_signet.signals import family_revoked, send
 
 if TYPE_CHECKING:
     from django.core.cache.backends.base import BaseCache
@@ -199,8 +199,12 @@ class CacheTokenStore(TokenStore):
         if won and family is not None:
             family.revoked_at = timezone.now()
             family.revoked_reason = reason
-            family_revoked.send(
-                sender=_CachedFamily, user=family.user, family=family, reason=reason
+            send(
+                family_revoked,
+                sender=_CachedFamily,
+                user=family.user,
+                family=family,
+                reason=reason,
             )
 
     def revoke_all_for_user(self, user: Any, reason: str) -> None:
