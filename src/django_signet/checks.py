@@ -259,6 +259,15 @@ def check_signing_key(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
     ]
 
 
+def _unusable_store_error(message: str) -> CheckMessage:
+    return Error(
+        message,
+        hint="Point SIGNET['STORE'] at a TokenStore subclass, by "
+        "dotted path, and make STORE_OPTIONS match its constructor.",
+        id="signet.E010",
+    )
+
+
 def check_token_store(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
     """The configured ``STORE`` must build, and a store that cannot revoke
     every session for a user must say so at startup.
@@ -268,18 +277,26 @@ def check_token_store(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
     nothing (the receiver logs a warning and lets the save through) and
     logout-all answers 501 - and a deployment should learn that from
     ``manage.py check``, not from an incident.
+
+    *Any* exception from building the store is reported as signet.E010,
+    not only the ``ImproperlyConfigured`` that :func:`get_store` raises for
+    an unimportable path or a constructor signature mismatch: a store's
+    own constructor may reject its ``STORE_OPTIONS`` with whatever it
+    likes (``ValueError``, say), and a check must never raise. Only this
+    check swallows it - ``get_store()`` itself still raises at runtime, so
+    a broken store fails loudly when it is used.
     """
     if not isinstance(_raw_signet(), dict | None):
         return []  # signet.E005 reports the real problem
     try:
         store = get_store()
     except ImproperlyConfigured as exc:
+        return [_unusable_store_error(str(exc))]
+    except Exception as exc:
         return [
-            Error(
-                str(exc),
-                hint="Point SIGNET['STORE'] at a TokenStore subclass, by "
-                "dotted path, and make STORE_OPTIONS match its constructor.",
-                id="signet.E010",
+            _unusable_store_error(
+                f"SIGNET['STORE'] = {_signet().get('STORE')!r} could not be "
+                f"constructed: {type(exc).__name__}: {exc}"
             )
         ]
     if store.supports_revoke_all_for_user:
