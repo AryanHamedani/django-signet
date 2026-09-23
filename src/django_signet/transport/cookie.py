@@ -43,9 +43,32 @@ class CookiePolicy:
     explicit_refresh_name = setting("COOKIE_REFRESH_NAME")
     explicit_csrf_name = setting("COOKIE_CSRF_NAME")
 
+    @classmethod
+    def _overridable(cls) -> frozenset[str]:
+        """The actual set of ``__init__``-overridable fields: the
+        ``setting()``-backed descriptors, and nothing else.
+
+        Deliberately narrower than ``hasattr(type(self), key)``, which is
+        true for *any* class attribute - a method like ``resolved_name`` or
+        a read-only ``@property`` like ``access_name`` would pass that
+        check and then either silently corrupt the instance (for a method)
+        or raise the wrong exception, an ``AttributeError`` from the
+        property setter rather than the ``TypeError`` this constructor
+        promises (for a property). Walking ``__mro__`` rather than just
+        ``vars(cls)`` keeps this correct for a subclass of ``CookiePolicy``
+        too.
+        """
+        return frozenset(
+            name
+            for klass in cls.__mro__
+            for name, value in vars(klass).items()
+            if isinstance(value, setting)
+        )
+
     def __init__(self, **overrides: Any) -> None:
+        overridable = self._overridable()
         for key, value in overrides.items():
-            if not hasattr(type(self), key):
+            if key not in overridable:
                 raise TypeError(f"CookiePolicy got an unexpected field {key!r}")
             setattr(self, key, value)
 
@@ -80,6 +103,15 @@ class CookiePolicy:
         # Deliberately readable by JavaScript (not httponly): the client
         # must echo it back. That doesn't exempt it from prefixing - see
         # the class docstring on cookie tossing.
+        #
+        # root_path=True assumes the CSRF cookie is always set at Path=/.
+        # That assumption lives here, not just in whoever calls
+        # set_cookie(): if a later task ever scopes the CSRF cookie more
+        # narrowly than root, __Host- becomes invalid for it in exactly the
+        # same silent-drop way described on resolved_name(), and this
+        # property must change to root_path=False (matching refresh_name)
+        # at the same time the path narrows. Do not scope the CSRF cookie
+        # without revisiting this line.
         return self.explicit_csrf_name or self.resolved_name(
             f"{self.prefix}-csrf", root_path=True
         )

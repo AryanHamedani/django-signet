@@ -41,8 +41,10 @@ class HeaderTransport(Transport):
             "refresh": pair.refresh.value,
         }
 
-    def clear(self, _response: Any) -> None:
-        return None  # nothing is stored client-side by this transport
+    def clear(self, response: Any) -> None:
+        _ = response  # nothing is stored client-side by this transport;
+        # kept named `response` (not `_response`) to match the ABC and the
+        # other two implementations - a caller may bind by keyword.
 
 
 class HybridTransport(Transport):
