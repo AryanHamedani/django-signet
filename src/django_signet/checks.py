@@ -24,6 +24,14 @@ and fails only later, at request time, with nothing at startup having said
 so. ``check_setting_types`` is the one check that reports *that* - crash
 avoidance and misconfiguration reporting are two different jobs, done by
 two different functions.
+
+What these checks cannot see: configuration written as Python on a class.
+They read the ``SIGNET`` settings dict (and, for ``signet.E008``, the real
+URLconf); a ``CookiePolicy(secure=False, httponly=False)`` constructed in
+a subclass, a ``store = X()`` pinned on one class, or any hook override is
+arbitrary code, and cannot be exhaustively introspected. A clean
+``manage.py check`` means the *settings* are coherent - not that every
+class-level override is.
 """
 
 from __future__ import annotations
@@ -145,6 +153,25 @@ def check_cookie_security(app_configs: Any, **kwargs: Any) -> list[CheckMessage]
             hint="Authentication cookies must only travel over HTTPS in "
             "production. Remove COOKIE_SECURE=False from the SIGNET setting.",
             id="signet.E001",
+        )
+    ]
+
+
+def check_cookie_httponly(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
+    """Warning, not Error: unlike ``secure=False`` there is no local-HTTP
+    reason to need it, but it is a deliberate, settable choice - and the
+    CSRF cookie is JavaScript-readable by design, so this flag governs the
+    access and refresh cookies only."""
+    if _signet().get("COOKIE_HTTPONLY", True):
+        return []
+    return [
+        CheckWarning(
+            "Signet access and refresh cookies are configured with "
+            "httponly=False, so any script on the page can read the tokens.",
+            hint="One XSS then exfiltrates a 14-day refresh token - the "
+            "exposure httpOnly cookies exist to prevent. Remove "
+            "COOKIE_HTTPONLY=False from the SIGNET setting.",
+            id="signet.W009",
         )
     ]
 
@@ -332,6 +359,7 @@ ALL_CHECKS = (
     check_signet_setting_shape,
     check_setting_types,
     check_cookie_security,
+    check_cookie_httponly,
     check_cookie_prefix,
     check_grace_cache,
     check_signing_key,

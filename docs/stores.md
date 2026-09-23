@@ -104,6 +104,17 @@ threat model, use `ORMTokenStore`.
   keeps them; `ORMTokenStore` has no such concern since its revocation
   state lives in the same row as the family, not a separate ever-growing
   key.
+- **"Forever" is only as long as the backend keeps the key.** An LRU cache
+  (Redis with an `allkeys-lru` policy, Memcached, `LocMemCache`'s
+  `MAX_ENTRIES`) evicts under memory pressure without regard to timeout.
+  In **denylist** mode (`deny_by_default=True`) absence means live, so an
+  evicted revocation marker silently *revives* the family for `Strict*`
+  checks: a logged-out or reuse-burned session authenticates again. (The
+  refresh path is unaffected - the family entry itself is deleted on
+  revocation, and `consume()` treats a missing family as revoked.) If you
+  use denylist mode, give it a cache that does not evict - e.g. Redis with
+  `noeviction` or `volatile-lru` - or use allowlist mode, where eviction
+  can only deny, never revive.
 - `purge_expired()` is a no-op (returns `0`): every key this store writes
   carries its own TTL, so the cache backend already reclaims expired
   entries on its own.

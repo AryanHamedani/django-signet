@@ -53,7 +53,10 @@ an issue before writing the code.
 - `ruff` handles formatting and linting; do not hand-format.
 - Maximum cyclomatic complexity is 8. If a function trips it, it wants
   splitting rather than an ignore comment.
-- Public API needs type hints; `mypy --strict` must pass.
+- Public API needs type hints; `mypy --strict` must pass. It gates `src/`
+  only - the test suite is **not** type-checked (the `tests.*` override in
+  `pyproject.toml` relaxes it, and `mypy tests` currently reports existing
+  errors). Don't read a green `mypy` run as covering the tests.
 - New behaviour is added by subclassing hooks, not by adding settings flags.
   If your feature needs a new global setting, say why in the issue first.
 
@@ -64,5 +67,10 @@ Security fixes use `fix(security):` and reference the advisory.
 
 ## Adding a hook
 
-Hook names are a frozen public API. Adding one is fine; renaming or removing
-one is a breaking change and waits for a major release.
+Hook names and signatures are public API, but **the public API is not
+frozen until 1.0.** This is 0.x: a hook may still be renamed, moved or
+change shape in a minor release when a design flaw demands it - 0.1.0's
+own final review moved `get_claims` onto the refresh path and replaced
+`RotationPolicy.rotate(extra=...)` with `rotate(get_claims=...)`. Every
+such change is called out in `CHANGELOG.md`. From 1.0 on, renaming or
+removing a hook is a breaking change and waits for a major release.

@@ -11,14 +11,14 @@ import pytest
 from django.core.cache import cache
 from django.test import override_settings
 from django.urls import include, path, reverse
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory
 
 from django_signet.checks import check_refresh_cookie_path
 from django_signet.csrf import CSRF_HEADER
 from django_signet.models import TokenFamily
 from django_signet.tokens.access import AccessToken
 from django_signet.transport.cookie import CookiePolicy, CookieTransport
-from django_signet.transport.header import HeaderTransport
+from django_signet.transport.header import HeaderTransport, HybridTransport
 from django_signet.urls import signet_urls
 from django_signet.views import SignetViewMixin
 
@@ -202,3 +202,38 @@ def test_header_mode_verify_and_logout_work(account):
     response = client.post(reverse("mobile:logout"), **_bearer(tokens["refresh"]))
     assert response.status_code == 200
     assert TokenFamily.objects.get().is_live is False
+
+
+# ----------------------------------------------- Group F: I4, hybrid
+
+
+class HybridRealm(SignetViewMixin):
+    transport = HybridTransport()
+
+
+def test_a_hybrid_header_refresh_returns_its_successor_only_as_a_cookie(account):
+    """I4 pins the actual behaviour, which the docstring used to overstate
+    ("serves a browser SPA and a mobile app"). A header-based refresh
+    through ``HybridTransport`` consumes the presented token and writes
+    the successor only into ``Set-Cookie`` - which a mobile client never
+    reads - so that client's session is gone. Hybrid is a cookie transport
+    that also *reads* a header for authentication; mobile and service
+    clients belong on ``HeaderTransport``. If full mobile support lands in
+    hybrid later, this test is the one that has to change."""
+    from django_signet.hashing import token_digest
+    from django_signet.models import IssuedToken
+    from django_signet.sessions.rotation import RotationPolicy
+
+    pair = RotationPolicy().open_session(account)
+    request = APIRequestFactory().post(
+        "/", HTTP_AUTHORIZATION=f"Bearer {pair.refresh.value}"
+    )
+    patterns, _ = signet_urls(HybridRealm, namespace="hybrid")
+    response = patterns[1].callback(request)  # refresh
+
+    assert response.status_code == 200
+    assert "refresh" not in response.data
+    assert "access" not in response.data
+    assert HybridRealm.transport.cookie.policy.refresh_name in response.cookies
+    consumed = IssuedToken.objects.get(digest=token_digest(pair.refresh.value))
+    assert consumed.consumed_at is not None

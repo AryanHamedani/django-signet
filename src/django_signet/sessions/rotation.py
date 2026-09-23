@@ -214,7 +214,8 @@ class RotationPolicy:
         point: it reports that an incident happened and hands over the
         blast radius (the family), without requiring the caller to
         understand how detection worked. Override to alert, log, or force
-        a password reset. Name and signature are frozen public API.
+        a password reset. Public API - but, like every hook, not frozen
+        until 1.0 (see CONTRIBUTING.md).
         """
 
     # --------------------------------------------------------------- private
