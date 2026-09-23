@@ -22,9 +22,14 @@ from django.conf import settings as django_settings
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
-from rest_framework.test import APIClient
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.test import APIClient, APIRequestFactory
+from rest_framework.views import APIView
 
+from django_signet.authentication import CookieJWTAuthentication
 from django_signet.checks import check_cookie_prefix
+from django_signet.csrf import CSRF_HEADER
 from django_signet.transport.cookie import CookiePolicy
 
 pytestmark = pytest.mark.django_db
@@ -316,3 +321,46 @@ def test_a_host_prefixed_refresh_cookie_name_is_only_caught_at_check_time(accoun
 
     errors = check_cookie_prefix(None)
     assert any(error.id == "signet.E002" for error in errors)
+
+
+# ---------------------------------------------------------- CSRF forgery
+
+
+class _CookieAuthenticatedWrite(APIView):
+    """A project endpoint protected by the stock cookie authenticator.
+
+    These two tests used ``LogoutView`` as their example of a
+    cookie-authenticated write (and lived in ``test_session_attacks.py``
+    until moving here kept that file under 500 lines). Since the
+    final-review fix for C1, logout authenticates through the *refresh*
+    credential instead (its CSRF handling is pinned in ``test_seams.py``),
+    so it no longer exercises the authenticator's CSRF check at all. This
+    stand-in keeps the original assertion - 401 through
+    ``CookieJWTAuthentication`` - on an endpoint that still takes that
+    path.
+    """
+
+    authentication_classes = (CookieJWTAuthentication,)
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
+        return Response({"ok": True})
+
+
+def _cookie_write(client, **headers):
+    request = APIRequestFactory().post("/", **headers)
+    request.COOKIES.update({k: m.value for k, m in client.cookies.items()})
+    return _CookieAuthenticatedWrite.as_view()(request)
+
+
+def test_csrf_is_required_for_cookie_authenticated_writes(client):
+    assert _cookie_write(client).status_code == 401
+    # ...and the same request with the double-submit pair succeeds, so the
+    # 401 above is the CSRF check, not a broken credential.
+    csrf_value = client.cookies[POLICY.csrf_name].value
+    assert _cookie_write(client, **{CSRF_HEADER: csrf_value}).status_code == 200
+
+
+def test_a_forged_csrf_header_is_rejected(client):
+    response = _cookie_write(client, **{CSRF_HEADER: "attacker-chosen"})
+    assert response.status_code == 401

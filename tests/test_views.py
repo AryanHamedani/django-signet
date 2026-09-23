@@ -1,6 +1,6 @@
 import pytest
 from django.urls import reverse
-from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
+from rest_framework.test import APIClient, APIRequestFactory
 
 from django_signet.csrf import CSRF_HEADER
 from django_signet.models import RevocationReason, TokenFamily
@@ -8,7 +8,13 @@ from django_signet.sessions.rotation import RotationPolicy
 from django_signet.sessions.stores.cache import CacheTokenStore
 from django_signet.tokens.access import AccessToken
 from django_signet.transport.cookie import CookiePolicy
-from django_signet.views import LogoutAllView, TokenObtainView, TokenRefreshView
+from django_signet.transport.header import HeaderTransport
+from django_signet.views import (
+    LogoutAllView,
+    LogoutView,
+    TokenObtainView,
+    TokenRefreshView,
+)
 
 pytestmark = pytest.mark.django_db
 POLICY = CookiePolicy()
@@ -117,25 +123,32 @@ def test_logout_revokes_the_family(client, account):
     assert family.revoked_reason == RevocationReason.LOGOUT
 
 
-def test_logout_without_csrf_header_is_401(client, account):
-    """Logout is a state-changing, cookie-authenticated POST - exactly the
-    shape CSRF exists to protect. Every other logout test in this file
+def test_logout_without_csrf_header_is_403(client, account):
+    """Logout is a state-changing POST carrying an ambient cookie - exactly
+    the shape CSRF exists to protect. Every other logout test in this file
     sends a correct CSRF_HEADER and only ever exercises the success path;
-    this one omits it so a regression that stopped this endpoint going
-    through CSRF-checked authentication (e.g. enforce_csrf=False on a
-    subclass, or swapping CookieJWTAuthentication for something CSRF-blind)
-    would be caught here rather than leaving every test in this file green.
+    this one omits it so a regression that stopped this endpoint running
+    the CSRF check would be caught here rather than leaving every test in
+    this file green.
+
+    Final-review change (C1): 401 -> 403. Logout now reads the refresh
+    credential through the same ``read_refresh_credential`` refresh uses,
+    and so answers a failed CSRF check the way refresh does - 403, cookies
+    left in place. The session surviving is asserted as before.
     """
     _login(client)
     response = client.post(reverse("django_signet:logout"))
-    assert response.status_code == 401
+    assert response.status_code == 403
     assert TokenFamily.objects.get().is_live is True
+    assert POLICY.refresh_name not in response.cookies
 
 
-def test_logout_all_without_csrf_header_is_401(client, account):
+def test_logout_all_without_csrf_header_is_403(client, account):
+    """Final-review change (C1): 401 -> 403, for the reason given on
+    ``test_logout_without_csrf_header_is_403``."""
     _login(client)
     response = client.post(reverse("django_signet:logout-all"))
-    assert response.status_code == 401
+    assert response.status_code == 403
     assert TokenFamily.objects.filter(revoked_at__isnull=True).count() == 1
 
 
@@ -167,7 +180,12 @@ def test_logout_all_returns_501_when_the_store_cannot_enumerate(account):
     """``CacheTokenStore.revoke_all_for_user`` raises ``NotImplementedError``
     by design - a documented limitation, not a crash. A checked-only-for-
     200/404 test would miss the difference between a clean 501 and an
-    unhandled 500 leaking a traceback, so assert the exact status."""
+    unhandled 500 leaking a traceback, so assert the exact status.
+
+    Final-review change (C1): logout-all no longer authenticates through
+    the access token, so ``force_authenticate`` cannot reach it any more;
+    the request now carries a real refresh credential from a session
+    opened in the cache-backed store it is revoked against."""
 
     class _CacheBackedRotation(RotationPolicy):
         store = CacheTokenStore()
@@ -175,8 +193,10 @@ def test_logout_all_returns_501_when_the_store_cannot_enumerate(account):
     class _CacheBackedLogoutAllView(LogoutAllView):
         rotation = _CacheBackedRotation()
 
-    request = APIRequestFactory().post("/")
-    force_authenticate(request, user=account)
+    pair = _CacheBackedRotation().open_session(account)
+    request = APIRequestFactory().post("/", **{CSRF_HEADER: "t"})
+    request.COOKIES[POLICY.refresh_name] = pair.refresh.value
+    request.COOKIES[POLICY.csrf_name] = "t"
     response = _CacheBackedLogoutAllView.as_view()(request)
     assert response.status_code == 501
 
@@ -223,3 +243,56 @@ def test_a_custom_claim_survives_a_refresh(account):
     assert refreshed.status_code == 200
     claims = AccessToken().verify(refreshed.cookies[POLICY.access_name].value)
     assert claims["org"] == "acme"
+
+
+# ------------------------------------------- final review, Group C: C1
+
+
+def test_logout_all_without_an_access_cookie_revokes_every_session(client, account):
+    """Logout-all acts on the refresh credential too, so an expired access
+    cookie no longer turns it into a silent 401."""
+    _login(client)
+    _login(APIClient())
+    del client.cookies[POLICY.access_name]
+    response = client.post(
+        reverse("django_signet:logout-all"),
+        **{CSRF_HEADER: client.cookies[POLICY.csrf_name].value},
+    )
+    assert response.status_code == 200
+    assert TokenFamily.objects.filter(revoked_at__isnull=True).count() == 0
+    assert response.cookies[POLICY.refresh_name]["max-age"] == 0
+
+
+def test_logout_all_with_a_dead_session_revokes_nothing_else(client, account):
+    """Stricter than logout: an old refresh token from an already-revoked
+    family must not be able to log its user out everywhere - replaying it
+    at refresh only ever burns its own family."""
+    _login(client)
+    other = APIClient()
+    _login(other)
+    TokenFamily.objects.filter(
+        pk=AccessToken().verify(client.cookies[POLICY.access_name].value)["sid"]
+    ).get().revoke(RevocationReason.ADMIN)
+
+    response = client.post(
+        reverse("django_signet:logout-all"),
+        **{CSRF_HEADER: client.cookies[POLICY.csrf_name].value},
+    )
+    assert response.status_code == 401
+    assert TokenFamily.objects.filter(revoked_at__isnull=True).count() == 1
+
+
+class _HeaderLogoutView(LogoutView):
+    transport = HeaderTransport()
+
+
+def test_a_header_transport_client_logs_out_with_its_refresh_token(account):
+    """No cookies, no CSRF: a mobile client presents its refresh token as
+    a Bearer credential, and that is enough to revoke its session."""
+    pair = RotationPolicy().open_session(account)
+    request = APIRequestFactory().post(
+        "/", HTTP_AUTHORIZATION=f"Bearer {pair.refresh.value}"
+    )
+    response = _HeaderLogoutView.as_view()(request)
+    assert response.status_code == 200
+    assert TokenFamily.objects.get().is_live is False

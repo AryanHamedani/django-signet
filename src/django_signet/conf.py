@@ -24,7 +24,9 @@ DEFAULTS: dict[str, Any] = {
     "COOKIE_SAMESITE": "Lax",
     "COOKIE_SECURE": True,
     "COOKIE_HTTPONLY": True,
-    "COOKIE_REFRESH_PATH": "/api/auth/refresh",
+    # The auth mount prefix, not the refresh endpoint alone: logout and
+    # logout-all revoke via the refresh credential, so it has to reach them.
+    "COOKIE_REFRESH_PATH": "/api/auth/",
     "COOKIE_DOMAIN": None,
     "COOKIE_ACCESS_NAME": None,  # None -> derive from prefix + prefix rules
     "COOKIE_REFRESH_NAME": None,

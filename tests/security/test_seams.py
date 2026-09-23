@@ -177,3 +177,74 @@ def test_changing_the_password_under_a_cache_store_warns_rather_than_blocks(
         caplog.text
     )
     assert _refresh(client, refresh_value, csrf_value).status_code == 200
+
+
+# ------------------------------------------------ Group C: C1 (Critical)
+
+
+def _assert_every_cookie_cleared(response):
+    for name, path in (
+        (POLICY.access_name, "/"),
+        (POLICY.refresh_name, POLICY.refresh_path),
+        (POLICY.csrf_name, "/"),
+    ):
+        assert response.cookies[name]["max-age"] == 0, name
+        assert response.cookies[name]["path"] == path, name
+
+
+def test_logout_without_an_access_cookie_revokes_the_family_and_clears_cookies(
+    account,
+):
+    """C1: the access cookie's ``Expires`` is the access token's, so a
+    browser deletes it after five minutes. ``LogoutView`` used to require
+    ``IsAuthenticated`` through that cookie - so after any idle period it
+    answered 401 and cleared nothing, and the refresh cookie was
+    path-scoped to ``/api/auth/refresh``, where logout could never see it.
+    The cookies are httpOnly, so the client could not clear them either:
+    "log out" left a live 14-day session.
+
+    Logout now revokes via the refresh credential, whose default path is
+    widened to the auth mount prefix. The first assertion is the one a
+    real browser enforces and Django's test client does not (it sends
+    every cookie regardless of path): the refresh cookie's ``Path`` must
+    actually cover the logout URLs. Red on revert of either half - the
+    path default in ``DEFAULTS["COOKIE_REFRESH_PATH"]`` (first assertion)
+    or ``LogoutView``'s refresh-credential revocation (401, family live).
+    """
+    client = _login()
+    refresh_path = client.cookies[POLICY.refresh_name]["path"]
+    assert reverse("django_signet:logout").startswith(refresh_path)
+    assert reverse("django_signet:logout-all").startswith(refresh_path)
+
+    del client.cookies[POLICY.access_name]  # expired, as a browser would
+    response = client.post(
+        reverse("django_signet:logout"),
+        **{CSRF_HEADER: client.cookies[POLICY.csrf_name].value},
+    )
+
+    assert response.status_code == 200
+    assert TokenFamily.objects.get().is_live is False
+    _assert_every_cookie_cleared(response)
+
+
+def test_logout_with_nothing_to_revoke_still_clears_cookies(account):
+    """Logout is idempotent: no credential at all is not an error, and the
+    cookies are cleared regardless. A second click on "log out" must not
+    produce a 401 the client has to special-case."""
+    response = APIClient().post(reverse("django_signet:logout"))
+    assert response.status_code == 200
+    _assert_every_cookie_cleared(response)
+
+
+def test_logout_with_an_ambient_refresh_cookie_requires_csrf(account):
+    """The refresh cookie is ambient, so logout via it is exactly as
+    forgeable as refresh via it: a cross-site page could otherwise log a
+    victim out with one POST. Enforced by the same code refresh uses
+    (``read_refresh_credential``), with the same 403-and-keep-cookies
+    response - a failed CSRF check must not double as a logout oracle."""
+    client = _login()
+    for header in ({}, {CSRF_HEADER: "attacker-chosen"}):
+        response = client.post(reverse("django_signet:logout"), **header)
+        assert response.status_code == 403
+        assert POLICY.refresh_name not in response.cookies
+    assert TokenFamily.objects.get().is_live is True

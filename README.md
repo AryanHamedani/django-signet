@@ -47,7 +47,16 @@ That wires up five endpoints: `POST /api/auth/login` sets the cookies,
 session, `POST /api/auth/logout` revokes it, and `POST /api/auth/logout-all`
 revokes every session for the user (ORM store only — see Limitations).
 
-### Cookie-transport clients must send `X-CSRF-Token` on refresh
+Refresh, logout and logout-all act on the **refresh** credential, not the
+access token. The access cookie expires with its five-minute token, so a
+logout that needed it could not end a session that had sat idle - which is
+most of them. The refresh cookie is therefore scoped to the auth mount
+prefix, `COOKIE_REFRESH_PATH = "/api/auth/"` by default, so it reaches all
+three (and still isn't sent on ordinary API calls). Logout is idempotent:
+it always clears the cookies, even when there is nothing left to revoke.
+If you mount the URLs somewhere else, set `COOKIE_REFRESH_PATH` to match.
+
+### Cookie-transport clients must send `X-CSRF-Token` on refresh and logout
 
 This is the one part of the contract that is easy to miss and produces a
 silent 403 if you do. `TokenObtainView` sets three cookies on login:
@@ -64,7 +73,7 @@ you'll see `signet-access`, `signet-refresh`, `signet-csrf` instead.)
 Cookies are ambient — the browser attaches them to every matching request on
 its own, which is what makes CSRF possible. So every unsafe request made
 with the cookie transport (refresh included) must also echo the CSRF cookie
-back as a header:
+back as a header - refresh, logout and logout-all included:
 
 ```js
 await fetch("/api/auth/refresh", {
@@ -87,7 +96,9 @@ client-side half of that fix.
 If you authenticate with a header instead (`Authorization: Bearer <token>`,
 via `HeaderJWTAuthentication`), none of this applies — a header a client set
 explicitly can't be forged by a cross-site page, so CSRF enforcement never
-triggers for it.
+triggers for it. A header client logs out by presenting its *refresh* token
+as the Bearer credential to a logout view whose `transport` is
+`HeaderTransport()`.
 
 ## Polymorphism
 

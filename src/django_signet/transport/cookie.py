@@ -23,9 +23,11 @@ class CookiePolicy:
       ``__Secure-`` requires Secure only.
     A ``__Host-`` cookie with a non-root path is silently dropped by the
     browser - no error, the request just arrives unauthenticated - so the
-    path-scoped refresh cookie (deliberately confined to the refresh
-    endpoint, so it isn't sent on ordinary API calls) must use
-    ``__Secure-`` instead. The CSRF cookie is root-scoped like the access
+    path-scoped refresh cookie must use ``__Secure-`` instead. It is
+    confined to the auth endpoints (``/api/auth/`` by default: refresh,
+    logout and logout-all all act on it), so it isn't sent on ordinary API
+    calls - which is also why it can't be ``__Host-``: that would need
+    ``Path=/``. The CSRF cookie is root-scoped like the access
     cookie: it has to reach every state-changing endpoint, and the same
     ``__Host-``/``__Secure-`` protection matters for it too, since an
     unprefixed double-submit cookie can be overwritten by a sibling
