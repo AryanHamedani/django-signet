@@ -5,6 +5,8 @@ from typing import Any
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework import serializers
 
+from django_signet.authentication import GENERIC_FAILURE
+
 
 class TokenObtainSerializer(serializers.Serializer[Any]):
     """Validates credentials. Subclass and override ``validate`` to support
@@ -27,7 +29,19 @@ class TokenObtainSerializer(serializers.Serializer[Any]):
             password=attrs["password"],
         )
         # One message for both "no such user" and "wrong password", so the
-        # endpoint cannot be used to enumerate accounts.
+        # endpoint cannot be used to enumerate accounts. Reuses the same
+        # GENERIC_FAILURE string every other endpoint in this library
+        # returns on an auth failure, rather than a second, differently
+        # worded "invalid credentials" message that would otherwise exist
+        # only here.
+        #
+        # ``not user.is_active`` is unreachable under the stock
+        # ``ModelBackend``, which already excludes inactive users via
+        # ``user_can_authenticate`` before ``authenticate()`` ever returns
+        # them - so this branch never fires with the default backend. It
+        # is kept as defence-in-depth for a custom authentication backend
+        # that does not perform that check itself, not because it changes
+        # behaviour under the default configuration.
         if user is None or not user.is_active:
-            raise serializers.ValidationError("Invalid credentials.")
+            raise serializers.ValidationError(GENERIC_FAILURE)
         return {"user": user}

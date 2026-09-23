@@ -104,6 +104,28 @@ def test_logout_revokes_the_family(client, account):
     assert family.revoked_reason == RevocationReason.LOGOUT
 
 
+def test_logout_without_csrf_header_is_401(client, account):
+    """Logout is a state-changing, cookie-authenticated POST - exactly the
+    shape CSRF exists to protect. Every other logout test in this file
+    sends a correct CSRF_HEADER and only ever exercises the success path;
+    this one omits it so a regression that stopped this endpoint going
+    through CSRF-checked authentication (e.g. enforce_csrf=False on a
+    subclass, or swapping CookieJWTAuthentication for something CSRF-blind)
+    would be caught here rather than leaving every test in this file green.
+    """
+    _login(client)
+    response = client.post(reverse("django_signet:logout"))
+    assert response.status_code == 401
+    assert TokenFamily.objects.get().is_live is True
+
+
+def test_logout_all_without_csrf_header_is_401(client, account):
+    _login(client)
+    response = client.post(reverse("django_signet:logout-all"))
+    assert response.status_code == 401
+    assert TokenFamily.objects.filter(revoked_at__isnull=True).count() == 1
+
+
 def test_logout_all_revokes_every_session(client, account):
     _login(client)
     second = APIClient()
