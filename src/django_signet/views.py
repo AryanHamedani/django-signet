@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import suppress
 from typing import Any
 
 from rest_framework import status
@@ -295,8 +294,15 @@ class LogoutView(RefreshCredentialView):
             return self.csrf_failure()
         except TransportError:
             return self.signed_out("Signed out.")
-        with suppress(SignetError):
+        try:
             self.rotation.revoke(raw, self.reason)
+        except SignetError:
+            # A cookie client is signed out by the clearing below whatever
+            # its token's state. A header client has no cookies to clear,
+            # so a credential that revoked nothing must not be reported as
+            # a sign-out.
+            if not self.refresh_is_ambient(request):
+                return self.failure()
         return self.signed_out("Signed out.")
 
 

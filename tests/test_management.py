@@ -34,8 +34,17 @@ def test_signet_purge_deletes_expired_families_and_keeps_live_ones(user):
 
 def test_signet_purge_uses_the_configured_store(user, settings):
     """Through ``get_store()``, like everything else: a cache store's
-    entries expire on their own, so it reports nothing to purge."""
+    entries expire on their own, so it reports nothing to purge.
+
+    An expired ORM family is seeded first, so a command hardcoded to the
+    ORM store would purge it and print "Purged 1" - on an empty database
+    both stores print "Purged 0", and this test could not fail."""
+    expired = RotationPolicy().open_session(user).family
+    TokenFamily.objects.filter(pk=expired.pk).update(
+        expires_at=timezone.now() - timedelta(seconds=1)
+    )
     settings.SIGNET = {"STORE": "django_signet.sessions.stores.cache.CacheTokenStore"}
     out = StringIO()
     call_command("signet_purge", stdout=out)
     assert "Purged 0 expired session families." in out.getvalue()
+    assert TokenFamily.objects.filter(pk=expired.pk).exists()

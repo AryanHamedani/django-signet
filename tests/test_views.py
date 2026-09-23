@@ -306,6 +306,20 @@ def test_a_header_transport_client_logs_out_with_its_refresh_token(account):
     assert TokenFamily.objects.get().is_live is False
 
 
+def test_a_header_logout_with_an_access_token_is_401(account):
+    """Second pass, minor: an access token presented to header logout
+    revoked nothing yet answered 200 "Signed out." A header client has no
+    cookies for the response to clear, so that 200 was a false report.
+    Red on revert of the non-ambient 401 in ``LogoutView.post``."""
+    pair = RotationPolicy().open_session(account)
+    request = APIRequestFactory().post(
+        "/", HTTP_AUTHORIZATION=f"Bearer {pair.access.value}"
+    )
+    response = _HeaderLogoutView.as_view()(request)
+    assert response.status_code == 401
+    assert TokenFamily.objects.get().is_live is True
+
+
 # ------------------------------------------- final review, Group D: I1, I3
 
 ADM_POLICY = CookiePolicy(prefix="adm")

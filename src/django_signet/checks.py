@@ -310,6 +310,20 @@ def _named_views(
             yield ":".join((*namespaces, entry.name)), entry.callback.view_class
 
 
+def _cookie_path_covers(cookie_path: str, url: str) -> bool:
+    """Whether a browser sends a cookie scoped to ``cookie_path`` to
+    ``url``. Paths match at ``/`` boundaries (RFC 6265 section 5.1.4), not
+    as string prefixes: ``/api/auth`` covers ``/api/auth/refresh`` but not
+    ``/api/authn/refresh``."""
+    if not url.startswith(cookie_path):
+        return False
+    return (
+        len(url) == len(cookie_path)
+        or cookie_path.endswith("/")
+        or url[len(cookie_path)] == "/"
+    )
+
+
 def _refresh_path_error(name: str, view_class: Any) -> CheckMessage | None:
     if not (
         isinstance(view_class, type) and issubclass(view_class, RefreshCredentialView)
@@ -324,7 +338,7 @@ def _refresh_path_error(name: str, view_class: Any) -> CheckMessage | None:
         url = reverse(name)
     except NoReverseMatch:
         return None  # a route that needs arguments has no single URL
-    if url.startswith(policy.refresh_path):
+    if _cookie_path_covers(policy.refresh_path, url):
         return None
     return Error(
         f"{view_class.__name__} is mounted at {url!r}, outside its refresh "

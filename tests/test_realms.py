@@ -157,6 +157,17 @@ def test_mounting_a_realm_off_its_own_refresh_path_is_an_error():
     assert all("StaffRealm" in m.msg for m in messages)
 
 
+@pytest.mark.parametrize(("mount", "errors"), [("api/authn/", 3), ("api/auth/", 0)])
+def test_a_refresh_path_covers_urls_only_at_a_path_boundary(settings, mount, errors):
+    """Browsers match a cookie's ``Path`` at ``/`` boundaries (RFC 6265
+    5.1.4): ``Path=/api/auth`` reaches ``/api/auth/refresh`` but not
+    ``/api/authn/refresh``, although the string is a prefix of both. E008
+    used ``str.startswith`` and called the second mount covered."""
+    settings.ROOT_URLCONF = _urlconf(default_at=mount)
+    settings.SIGNET = {"COOKIE_REFRESH_PATH": "/api/auth"}
+    assert [m.id for m in check_refresh_cookie_path(None)] == ["signet.E008"] * errors
+
+
 @override_settings(ROOT_URLCONF=MOBILE_URLS)
 def test_a_header_realm_has_no_cookie_path_to_check():
     assert check_refresh_cookie_path(None) == []
