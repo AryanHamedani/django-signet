@@ -101,6 +101,10 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests assert, use throwaway secrets, and take unused fixtures by design.
 "tests/**" = ["S101", "S105", "S106", "ARG001", "ARG002"]
+# Runs docs/examples/client.js under Node. The argv is fixed: the node found
+# on PATH, files in this repository and the live server's URL - no shell and
+# no outside input, which is the case S603 asks each call site to confirm.
+"tests/docs/test_client_node.py" = ["S603"]
 "noxfile.py" = ["ARG001"]
 # These two ignores are file-scoped, not rule-scoped: they exempt these
 # specific files from N801/N818 entirely, so a new, genuinely badly-named

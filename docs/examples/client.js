@@ -7,9 +7,13 @@
 // Where the API lives. Empty when the page and the API share an origin.
 const API = "";
 
-// The server's default CSRF cookie. It is "signet-csrf" under
-// COOKIE_SECURE=False, and "__Secure-signet-csrf" once COOKIE_DOMAIN is set.
+// SET THIS to the name of the CSRF cookie your server sets:
+//   "__Host-signet-csrf"    over HTTPS, with the default settings
+//   "signet-csrf"           over plain http://, with COOKIE_SECURE=False
+//   "__Secure-signet-csrf"  over HTTPS, with COOKIE_DOMAIN set
+// It is different again when COOKIE_PREFIX or COOKIE_CSRF_NAME is set.
 const CSRF_COOKIE = "__Host-signet-csrf";
+
 const CSRF_HEADER = "X-CSRF-Token";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS", "TRACE"]);
 
@@ -32,15 +36,21 @@ export async function login(username, password) {
   return response.ok;
 }
 
-// 200: new cookies are set. 401: the session is over; log in again.
-// 403: the CSRF header was missing or wrong, and the cookies are untouched.
-export async function refresh() {
-  const response = await fetch(`${API}/api/auth/refresh`, {
+// Resolves true once new cookies are set, false when the session is over.
+// Calls made while a refresh is in flight share it rather than start another.
+let refreshing = null;
+
+export function refresh() {
+  refreshing ??= fetch(`${API}/api/auth/refresh`, {
     method: "POST",
     credentials: "include",
     headers: { [CSRF_HEADER]: readCookie(CSRF_COOKIE) },
-  });
-  return response.ok;
+  })
+    .then((response) => response.ok)
+    .finally(() => {
+      refreshing = null;
+    });
+  return refreshing;
 }
 
 export async function verify() {

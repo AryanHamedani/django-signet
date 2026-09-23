@@ -1,16 +1,18 @@
 # Quickstart
 
-By the end of this page, a browser can log in to your Django REST Framework
-project, refresh its session, check it and log out. Both tokens live in
-httpOnly cookies that your JavaScript never reads. Every Python and
-JavaScript block on this page comes from a file the test suite checks.
+By the end of this page, a browser logs in to your Django REST Framework
+project, calls a protected view, refreshes its session and logs out. Both
+tokens live in httpOnly cookies that your JavaScript never reads.
+
+Every Python and JavaScript block on this page comes from a file the test
+suite runs. The Python examples run under Django's test client. `client.js`
+and the console session in step 8 run under Node against a live server.
 
 **Prerequisites:**
 
 - Python 3.12 or later, Django 5.2 or later, and Django REST Framework 3.16
   or later.
-- A Django project with a user you can log in as, for example one created
-  with `python manage.py createsuperuser`.
+- A Django project created with `django-admin startproject`.
 
 ```{note}
 The public API is not frozen until 1.0. Until then a minor release may
@@ -24,23 +26,36 @@ rename a hook or change its signature; every such change is listed in the
 pip install django-signet
 ```
 
-## Step 2: Add the settings
+## Step 2: Create an app
 
-Add the following to your settings module:
+Create an app to hold your API view and the browser client:
+
+```bash
+python manage.py startapp notes
+```
+
+## Step 3: Add the settings
+
+Add the highlighted lines to your settings module:
 
 ```{literalinclude} ../examples/quickstart_settings.py
 :language: python
 :start-at: INSTALLED_APPS
+:emphasize-lines: 7-9,12-19
 ```
 
-A project made with `django-admin startproject` already lists the two
-`django.contrib` apps. Add `rest_framework` and `django_signet` to the list.
-
-- `django_signet` in `INSTALLED_APPS` registers the library's
+- `django_signet` registers the library's
   [system checks](../reference/checks.md) and its session models.
-- `DEFAULT_AUTHENTICATION_CLASSES` makes your own DRF views authenticate
-  from the access cookie. The library's five endpoints set their own
-  authentication and do not depend on this setting.
+- `DEFAULT_AUTHENTICATION_CLASSES` makes your views authenticate from the
+  access cookie.
+- `DEFAULT_PERMISSION_CLASSES` makes them refuse anyone who is not logged
+  in. DRF's own default allows everyone, so without this line a view you
+  forget to protect answers anonymous requests.
+
+The permission default does not lock anyone out of logging in. The five
+endpoints of the library set their own permissions: login, refresh, logout
+and logout-all allow anonymous requests, and verify requires a logged-in
+user.
 
 The session models need their tables, so run the migrations:
 
@@ -48,16 +63,27 @@ The session models need their tables, so run the migrations:
 python manage.py migrate
 ```
 
-## Step 3: Mount the URLs
+## Step 4: Write a view
 
-Add the endpoints to your root URLconf:
+Replace the contents of `notes/views.py`:
+
+```{literalinclude} ../examples/notes/views.py
+:language: python
+:start-at: from rest_framework
+```
+
+## Step 5: Mount the URLs
+
+Add the highlighted lines to your root URLconf. Note the added `include`
+import:
 
 ```{literalinclude} ../examples/quickstart_urls.py
 :language: python
 :start-at: from django.urls
+:emphasize-lines: 1-2,6-8
 ```
 
-This mounts five endpoints:
+This mounts the library's five endpoints under `/api/auth/`:
 
 | Method and path | What it does |
 |---|---|
@@ -67,12 +93,11 @@ This mounts five endpoints:
 | `POST /api/auth/logout` | Revokes this session and clears the cookies |
 | `POST /api/auth/logout-all` | Revokes every session of the user |
 
-Mount them at `api/auth/` unless you have a reason not to. The refresh
-cookie is scoped to the path `/api/auth/` by default
-([`COOKIE_REFRESH_PATH`](../reference/settings.md#cookie_refresh_path)), and
-refresh, logout and logout-all all read it. A browser sends a cookie only to
-URLs under its path. If you mount the endpoints somewhere else, change
-`COOKIE_REFRESH_PATH` to match: {doc}`../howto/deploying` shows how.
+Keep them at `api/auth/`. Refresh, logout and logout-all read the refresh
+cookie, and a browser sends that cookie only to URLs under its path, which
+is `/api/auth/` by default
+([`COOKIE_REFRESH_PATH`](../reference/settings.md#cookie_refresh_path)). To
+mount them elsewhere, see {doc}`../howto/deploying`.
 
 Run the system checks:
 
@@ -83,7 +108,7 @@ python manage.py check
 If the mount and the cookie path disagree, the check fails with
 [`signet.E008`](../reference/checks.md#signete008---refresh-credential-endpoint-outside-the-cookies-path).
 
-## Step 4: Develop over plain HTTP
+## Step 6: Develop over plain HTTP
 
 By default every cookie is marked `Secure`, and browsers ignore a `Secure`
 cookie in a response served over plain `http://`. Some browsers make an
@@ -100,34 +125,78 @@ With `COOKIE_SECURE` set to `False`:
 - The cookies lose the `Secure` flag.
 - The cookie names lose their `__Host-` and `__Secure-` prefixes, which
   browsers accept only on `Secure` cookies. The names become
-  `signet-access`, `signet-refresh` and `signet-csrf`.
+  `signet-access`, `signet-refresh` and `signet-csrf`. You need the last
+  one in step 7.
 - `python manage.py check` reports
   [`signet.E001`](../reference/checks.md#signete001---insecure-cookies-outside-debug)
   for it whenever `DEBUG` is `False`.
 
-The simplest local setup serves the page and the API from one origin, for
-example through your frontend dev server's proxy. Serving them from two
-origins needs CORS; see {doc}`../howto/spa`.
+If your frontend has its own dev server, for example at
+`http://localhost:5173`, it can still call the API at
+`http://localhost:8000`. Browsers do not separate cookies by port, so the
+page can read the CSRF cookie the API sets, and the two are the same site.
+You need only CORS: set up django-cors-headers as
+[the SPA guide describes](../howto/spa.md#allow-the-frontends-origin), with
+`CORS_ALLOWED_ORIGINS = ["http://localhost:5173"]`, and set `API` in
+`client.js` to `"http://localhost:8000"`. You do not need `COOKIE_DOMAIN`.
 
-## Step 5: Call the API from the browser
+## Step 7: Add the browser client
 
-This module is the browser side. Each function is one call to the API:
+Save this module as `notes/static/client.js`:
 
 ```{literalinclude} ../examples/client.js
 :language: javascript
 ```
 
-Every call passes `credentials: "include"`, so the browser attaches the
-cookies to requests your page sends to another origin too.
+Then set `CSRF_COOKIE` to the name of the CSRF cookie your server sets:
 
-### Log in
+- Over plain HTTP, with the settings from step 6:
+  `const CSRF_COOKIE = "signet-csrf";`
+- Over HTTPS, with the default settings, leave it as it is.
 
-`login()` posts the username and password as JSON. The login endpoint
-accepts JSON only and answers 415 to a form-encoded body. Wrong credentials
-answer 400.
+If the name is wrong, the page sends the wrong CSRF header, so refresh and
+logout answer 403 and every write to your views answers 401.
 
-A successful login answers `{"authenticated": true}`. The tokens are not in
-the body. They arrive as three cookies:
+## Step 8: Try it
+
+Create a user and start the server:
+
+```bash
+python manage.py createsuperuser --username alice
+python manage.py runserver
+```
+
+Open <http://localhost:8000/static/client.js> in your browser. The page
+only shows the file; opening it puts the browser's console on the API's
+origin. `runserver` serves the files in `notes/static/` because
+`DEBUG` is `True` and `django.contrib.staticfiles` is installed.
+
+Open the browser's developer console and run these lines one at a time,
+with your own password. Each comment shows the result to expect:
+
+```{literalinclude} ../examples/try_it.js
+:language: javascript
+```
+
+In order, the lines:
+
+1. Import the client.
+2. Log in. The browser now holds the three cookies described
+   [below](#the-cookies).
+3. Check the access token.
+4. Read your view. A `GET` needs only the cookies.
+5. Write to your view. `api()` sends the `X-CSRF-Token` header.
+6. Rotate both tokens. New cookies replace the old ones.
+7. Log out. The session is revoked and the cookies are cleared.
+8. Check again. With the access cookie gone, verify answers 401 and
+   `verify()` returns `false`.
+
+## How it works
+
+### The cookies
+
+Login answers `{"authenticated": true}`. The tokens are not in the body.
+They arrive as cookies, shown here with their HTTPS names:
 
 | Cookie | Path | httpOnly | Expires with |
 |---|---|---|---|
@@ -141,68 +210,49 @@ The lifetimes are the defaults of
 The refresh cookie cannot use the `__Host-` prefix, because browsers accept
 that prefix only on a cookie with `Path=/`.
 
-### Refresh
+### The CSRF header
 
-`refresh()` reads the CSRF cookie and sends its value back in the
-`X-CSRF-Token` header. The endpoint compares the two and refuses the request
-if they differ:
+The browser attaches cookies to a request on its own, so a cookie alone
+does not prove that your page sent the request. Only a script that can read
+the CSRF cookie can send the matching `X-CSRF-Token` header. The server
+requires it on refresh, logout, logout-all, and every request to your views
+other than `GET`, `HEAD`, `OPTIONS` and `TRACE`.
 
-- **200**: both tokens were rotated and new cookies are set, including a new
-  CSRF cookie. Read the CSRF cookie again before each request rather than
-  keeping its value.
-- **401**: the refresh token is missing or no longer valid, so the session
-  is over. Log in again.
-- **403**: the CSRF header was missing or did not match. The refresh token
-  was not used and the cookies are left as they were.
-
-The header is what protects the session from cross-site request forgery.
-The browser attaches cookies to a request on its own, so a cookie alone does
-not prove that your page sent the request. Only a script that can read the
-CSRF cookie can send the matching header.
+Every refresh sets a new CSRF cookie, so `client.js` reads the cookie again
+for each request rather than keeping its value.
 
 ### Verify
 
-`verify()` sends a `GET`, which needs no CSRF header. It answers 200 while
-the access token is valid. It does not check that the session is still
-live: after logout it keeps answering 200 until the old access token
-expires. To make it a liveness check, see
+Verify checks the access token only. It does not check that the session is
+still live. If the session is revoked elsewhere, by logout-all from another
+device or by reuse detection, an access cookie this browser still holds
+keeps answering 200 until it expires (5 minutes by default). To check the
+session as well, see
 [Making verify a liveness check](../reference/views.md#making-verify-a-liveness-check).
 
-### Log out
+### When a call answers 401
 
-`logout()` sends the CSRF header, as refresh does. Without it the endpoint
-answers 403 and revokes nothing. With it, logout revokes the session, clears
-the three cookies and answers 200 `{"detail": "Signed out."}`.
+`api()` sends the CSRF header on every unsafe method. A 401 from one of
+your views therefore usually means that the access token is missing or
+expired, or that the CSRF cookie `client.js` reads is not the one the
+server set. `api()` then refreshes once and retries. A call that needs a
+refresh while another is in flight waits for that one instead of starting
+its own.
 
-Logout is idempotent for a browser. With no refresh cookie, or with a valid
-CSRF header and a refresh cookie that no longer works, it still answers 200.
-
-Logout-all needs the CSRF header too, and revokes every session of the
-user. It is not idempotent: a refresh token that no longer works answers
-401. Under a token store that cannot revoke by user, a request whose
-refresh token verifies answers 501; the default ORM store can. See
-{doc}`../stores`.
-
-### Call your own views
-
-`api()` calls your own DRF views. With the `DEFAULT_AUTHENTICATION_CLASSES`
-from step 2, a view authenticates from the access cookie:
-
-- `GET`, `HEAD`, `OPTIONS` and `TRACE` need only the cookie.
-- Every other method also needs the `X-CSRF-Token` header. Without it your
-  view answers 401 with the same generic message as an expired token, not
-  the 403 that refresh and logout use.
-
-`api()` sends the header on every unsafe method, so a 401 means the access
-token is missing or was rejected, usually because it expired. `api()` then
-refreshes once and retries.
+A 401 from refresh means the session is over: log in again. For the other
+responses the endpoints give, see {doc}`../reference/views`. If two
+tabs refresh at once, the second is answered from the grace cache; see
+[Share the grace cache between processes](../howto/deploying.md#share-the-grace-cache-between-processes).
 
 ## What you built
 
 - Tokens that live in httpOnly cookies, out of reach of your page's
   JavaScript.
 - A session that rotates on every refresh.
-- CSRF protection on every request that changes state.
+- A view that refuses anonymous requests.
+- CSRF protection on every cookie-authenticated request that changes state.
+  Login accepts JSON only, so a plain HTML form on another site cannot log
+  a browser in.
 
 ## Next steps
 

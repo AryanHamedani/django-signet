@@ -15,41 +15,27 @@ from pathlib import Path
 import pytest
 from django.test import override_settings
 from django.urls import reverse
-from examples import (
-    deploy_settings,
-    local_settings,
-    quickstart_settings,
-    spa_settings,
-)
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
+from examples import deploy_settings, local_settings, spa_settings
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.settings import api_settings
 from rest_framework.test import APIClient, APIRequestFactory
-from rest_framework.views import APIView
 
 from django_signet.authentication import GENERIC_FAILURE, CookieJWTAuthentication
 from django_signet.checks import check_cookie_security, check_refresh_cookie_path
 from django_signet.csrf import CSRF_HEADER, SAFE_METHODS
 from django_signet.transport.cookie import CookiePolicy
+from django_signet.views import (
+    LogoutAllView,
+    LogoutView,
+    TokenObtainView,
+    TokenRefreshView,
+    TokenVerifyView,
+)
+from tests.docs.helpers import settings_of, wire_header
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "docs" / "examples"
 PASSWORD = "pw-not-used-in-assertions"  # the root conftest's `user` fixture
 CREDENTIALS = {"username": "alice", "password": PASSWORD}
-
-
-def settings_of(module):
-    """The settings a settings example defines: its upper-case names."""
-    return {k: v for k, v in vars(module).items() if k.isupper()}
-
-
-def wire_header(meta_key):
-    """A WSGI ``META`` key as the header name a client sends.
-
-    ``HTTP_X_CSRF_TOKEN`` -> ``X-CSRF-TOKEN``. Header names are
-    case-insensitive on the wire, so callers compare them lower-cased.
-    """
-    assert meta_key.startswith("HTTP_")
-    return meta_key.removeprefix("HTTP_").replace("_", "-")
 
 
 def test_wire_header_conversion_is_the_one_django_applies():
@@ -58,15 +44,6 @@ def test_wire_header_conversion_is_the_one_django_applies():
 
 
 # ---------------------------------------------------------------- quickstart
-
-
-@pytest.fixture
-def quickstart():
-    with override_settings(
-        ROOT_URLCONF="examples.quickstart_urls",
-        **settings_of(quickstart_settings),
-    ):
-        yield
 
 
 @pytest.mark.django_db
@@ -150,37 +127,37 @@ def test_quickstart_mount_is_covered_by_the_refresh_cookie_path(quickstart):
 
 
 @pytest.mark.django_db
-def test_quickstart_default_authentication_protects_your_views(quickstart, user):
-    default_classes = api_settings.DEFAULT_AUTHENTICATION_CLASSES
-    assert default_classes == [CookieJWTAuthentication]
+def test_quickstart_view_uses_the_rest_framework_defaults(quickstart, user):
+    assert [IsAuthenticated] == api_settings.DEFAULT_PERMISSION_CLASSES
+    default_authentication = api_settings.DEFAULT_AUTHENTICATION_CLASSES
+    assert default_authentication == [CookieJWTAuthentication]
 
-    class Notes(APIView):
-        # Read at class creation, inside the override, as the reader's own
-        # views read it at import.
-        authentication_classes = api_settings.DEFAULT_AUTHENTICATION_CLASSES
-        permission_classes = (IsAuthenticated,)
-
-        def get(self, request):
-            return Response({"user": request.user.get_username()})
-
-        def post(self, request):
-            return Response(status=201)
+    assert APIClient().get("/api/notes").status_code == 401  # IsAuthenticated
 
     client = APIClient()
     client.post(reverse("django_signet:login"), CREDENTIALS, format="json")
     csrf = client.cookies[CookiePolicy().csrf_name].value
-    factory = APIRequestFactory()
-    factory.cookies = client.cookies
-    view = Notes.as_view()
-
-    assert view(factory.get("/notes")).data == {"user": "alice"}
+    assert client.get("/api/notes").json() == {"user": "alice"}
     # No CSRF header: the authenticator's generic 401, not refresh's 403.
-    refused = view(factory.post("/notes"))
+    refused = client.post("/api/notes")
     assert refused.status_code == 401
-    assert refused.data == {"detail": GENERIC_FAILURE}
-    assert (
-        view(factory.post("/notes", headers={wire_header(CSRF_HEADER): csrf}))
-    ).status_code == 201
+    assert refused.json() == {"detail": GENERIC_FAILURE}
+    created = client.post("/api/notes", headers={wire_header(CSRF_HEADER): csrf})
+    assert created.status_code == 201
+
+
+def test_quickstart_permission_default_leaves_the_auth_endpoints_alone():
+    """Each endpoint sets its own permission, so the IsAuthenticated default
+    reaches none of them: login, refresh and the logouts stay anonymous."""
+    expected = {
+        TokenObtainView: (AllowAny,),
+        TokenRefreshView: (AllowAny,),
+        LogoutView: (AllowAny,),
+        LogoutAllView: (AllowAny,),
+        TokenVerifyView: (IsAuthenticated,),
+    }
+    for view, permissions in expected.items():
+        assert tuple(view.permission_classes) == permissions, view.__name__
 
 
 # ------------------------------------------------------------ local http dev
@@ -214,8 +191,8 @@ def _client_js():
 
 
 def _js_functions(source):
-    """``{name: body}`` for every top-level ``export async function``."""
-    parts = re.split(r"^export async function (\w+)", source, flags=re.MULTILINE)
+    """``{name: body}`` for every top-level exported function."""
+    parts = re.split(r"^export (?:async )?function (\w+)", source, flags=re.MULTILINE)
     return dict(zip(parts[1::2], parts[2::2], strict=True))
 
 
@@ -227,6 +204,24 @@ def _js_const(source, name):
 
 def test_client_js_reads_the_cookie_the_server_sets():
     assert _js_const(_client_js(), "CSRF_COOKIE") == CookiePolicy().csrf_name
+
+
+def test_client_js_lists_the_csrf_cookie_name_for_each_setup():
+    """The ``SET THIS`` table above ``CSRF_COOKIE``, in order: the default,
+    plain HTTP (``local_settings``) and ``COOKIE_DOMAIN`` (``spa_settings``)."""
+    listed = re.findall(r'^//   "([^"]+)" ', _client_js(), flags=re.MULTILINE)
+    expected = [CookiePolicy().csrf_name]
+    for module in (local_settings, spa_settings):
+        with override_settings(**settings_of(module)):
+            expected.append(CookiePolicy().csrf_name)
+    assert listed == expected
+
+
+def test_quickstart_tells_the_reader_the_plain_http_csrf_cookie():
+    with override_settings(**settings_of(local_settings)):
+        name = CookiePolicy().csrf_name
+    page = (EXAMPLES.parent / "tutorial" / "quickstart.md").read_text()
+    assert f'`const CSRF_COOKIE = "{name}";`' in page
 
 
 def test_client_js_sends_the_header_the_server_checks():
@@ -281,6 +276,7 @@ def test_spa_cors_settings_allow_the_csrf_header():
     allowed = {h.lower() for h in spa_settings.CORS_ALLOW_HEADERS}
     assert wire_header(CSRF_HEADER).lower() in allowed
     assert "content-type" in allowed  # login posts JSON
+    assert "authorization" in allowed  # a header realm's bearer token
 
 
 @pytest.mark.django_db
