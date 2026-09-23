@@ -8,6 +8,21 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    name: full suite + security gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e ".[rsa]" pytest pytest-django
+      - name: full suite
+        run: pytest -q
+      - name: the adversarial suite must pass
+        run: pytest tests/security/ -v
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -24,7 +39,7 @@ jobs:
           path: dist/
 
   publish:
-    needs: build
+    needs: [build, test]
     runs-on: ubuntu-latest
     environment:
       name: pypi
