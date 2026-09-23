@@ -123,6 +123,8 @@ logout cannot disagree about which cookies they read or which claims they
 mint:
 
 ```python
+from rest_framework.permissions import IsAdminUser
+
 from django_signet.authentication import StrictCookieJWTAuthentication
 from django_signet.transport.cookie import CookiePolicy, CookieTransport
 from django_signet.urls import signet_urls
@@ -151,6 +153,7 @@ class StaffAuth(StrictCookieJWTAuthentication):  # instant revocation
 
 class PaymentViewSet(ModelViewSet):
     authentication_classes = [StaffAuth]
+    permission_classes = [IsAdminUser]  # the actual authorization boundary
 
 
 urlpatterns = [
@@ -164,6 +167,21 @@ urlpatterns = [
 and `staff:logout-all` are the realm's endpoints. The stock `verify` view
 authenticates through its own view's transport, so the staff realm's verify
 reads the `adm-` cookies without being told to.
+
+**A realm is not an authorization boundary.** It decides which cookies are
+read and written, nothing more:
+
+- *Anyone* with valid credentials can log in through `staff:login` - the
+  stock serializer checks the password, not `is_staff`.
+- Tokens are interchangeable across realms. Every realm signs with the same
+  key, `aud` and `typ`, so a customer's access token copied into an `adm-`
+  cookie authenticates `StaffAuth` just as well.
+
+`StaffAuth` answers "who is this?"; only a permission class answers "may
+they?". That is why `PaymentViewSet` carries `IsAdminUser` above - without
+it, every logged-in user can reach it. (To also refuse non-staff at the
+staff login itself, give the realm's login a `serializer_class` whose
+`validate()` rejects them.)
 
 There is no `cookie_policy` attribute on the authentication or view classes
 (an early design sketch showed one; assigning it would silently do nothing).
@@ -187,6 +205,13 @@ urlpatterns += [
 Log in, refresh with `Authorization: Bearer <refresh>`, verify with
 `Authorization: Bearer <access>`, and log out by presenting the *refresh*
 token.
+
+`HybridTransport` is not the mobile option. It is a cookie transport that
+also *reads* a bearer header for authentication - but it writes only
+cookies, so a header-based refresh through it consumes the old refresh
+token and returns the successor only in `Set-Cookie`, which a mobile client
+never reads. Give mobile and service clients their own `HeaderTransport`
+realm.
 
 ### Hooks
 
@@ -244,6 +269,28 @@ access token after the first refresh.
 
 Stated here, not just in the migration guide — a library that hides its
 trade-offs earns distrust the first time someone finds one on their own.
+
+- **The public API is not frozen until 1.0.** This is 0.1.0. Hook names and
+  signatures may still change in a minor release when a design flaw
+  demands it (0.1.0 itself moved `get_claims` onto the refresh path);
+  every such change is called out in the CHANGELOG.
+- **The `__Secure-` refresh cookie can be planted by a sibling subdomain.**
+  `__Host-` would forbid that, but it requires `Path=/`, and the refresh
+  cookie is deliberately path-scoped to the auth endpoints so it isn't
+  sent on every API call. A `__Secure-` cookie only has to come from an
+  HTTPS origin, so a compromised or hostile `evil.example.com` can set a
+  `__Secure-signet-refresh` for `example.com` holding *its own* session's
+  refresh token - session fixation: the victim's browser then acts as the
+  attacker's account. That is the accepted trade-off of path scoping. The
+  access and CSRF cookies are `__Host-` and immune; if you do not control
+  every subdomain of your registrable domain, keep untrusted content off
+  it.
+- **System checks see settings, not code.** `manage.py check` validates
+  the `SIGNET` dict and the mounted URLs. Configuration written as Python
+  on a class - `CookiePolicy(secure=False, httponly=False)` in a subclass,
+  a `store = X()` pinned on one class - is arbitrary code and is not
+  introspected. A clean check means the settings are coherent, not that
+  every class-level override is.
 
 - **`CacheTokenStore.revoke_all_for_user()` raises `NotImplementedError`.** A
   cache backend has no way to enumerate a user's families (`cache.keys()` /

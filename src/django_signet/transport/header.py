@@ -48,10 +48,17 @@ class HeaderTransport(Transport):
 
 
 class HybridTransport(Transport):
-    """Prefer the cookie; fall back to the header.
+    """A cookie transport that also *reads* a header for authentication.
 
-    Lets one API serve a browser SPA and a mobile app without separate
-    endpoints.
+    Extraction prefers the cookie and falls back to ``Authorization:
+    Bearer``, so an authentication class using it accepts either. But every
+    write goes to cookies: ``attach`` sets them, and nothing is returned in
+    the body. That makes it **not** a transport for mobile or service
+    clients - a header-based refresh through it consumes the presented
+    refresh token and hands the successor back only in ``Set-Cookie``,
+    which such a client never reads, so its session is lost. Use
+    ``HeaderTransport`` (a header realm) for them. Full mobile support in
+    hybrid is deferred to a later version.
     """
 
     def __init__(

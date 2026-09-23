@@ -1,6 +1,7 @@
 from django.test import override_settings
 
 from django_signet.checks import (
+    check_cookie_httponly,
     check_cookie_prefix,
     check_cookie_security,
     check_grace_cache,
@@ -111,6 +112,7 @@ def test_malformed_signet_does_not_crash_the_other_checks():
     ``check_signet_setting_shape`` names the real problem; every other
     check degrades to its no-override behaviour instead of crashing."""
     assert check_cookie_security(None) == []
+    assert check_cookie_httponly(None) == []
     assert check_cookie_prefix(None) == []
     assert check_grace_cache(None) == []
     assert check_signing_key(None) == []
@@ -270,3 +272,17 @@ def test_a_store_that_cannot_revoke_all_for_a_user_warns():
 @override_settings(SIGNET={"STORE": "no.such.module.Store"})
 def test_an_unusable_store_is_an_error():
     assert [m.id for m in check_token_store(None)] == ["signet.E010"]
+
+
+# ---------------------------------------- final review, Group F: I6
+
+
+@override_settings(SIGNET={"COOKIE_HTTPONLY": False})
+def test_javascript_readable_auth_cookies_warn():
+    """I6: every other cookie flag had a check; httponly=False - the one
+    that hands the tokens to any script on the page - had none."""
+    assert [m.id for m in check_cookie_httponly(None)] == ["signet.W009"]
+
+
+def test_httponly_auth_cookies_are_quiet():
+    assert check_cookie_httponly(None) == []
