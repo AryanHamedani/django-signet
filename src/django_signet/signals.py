@@ -32,12 +32,31 @@ from django_signet.isolation import savepoint_if_in_transaction
 
 logger = logging.getLogger(__name__)
 
-token_issued = django.dispatch.Signal()  # user, family, request
-token_refreshed = django.dispatch.Signal()  # user, family, request
-# user, family, request - and request is always None: reuse is detected
-# inside RotationPolicy, which never sees the HTTP request.
+#: Sent after a successful login, with keyword arguments ``user``,
+#: ``family`` and ``request``. ``family`` is whatever the configured store
+#: returns - a :class:`TokenFamily <django_signet.sessions.models.TokenFamily>`
+#: under the ORM store, the cache store's own record under the cache store.
+token_issued = django.dispatch.Signal()
+
+#: Sent after a successful refresh, with the same ``user``, ``family`` and
+#: ``request`` arguments as :data:`token_issued`.
+token_refreshed = django.dispatch.Signal()
+
+#: Sent when a consumed refresh token is replayed outside the grace
+#: window, with ``user``, ``family`` and ``request`` - whether or not
+#: ``RotationPolicy.burn_family_on_reuse`` then burns the family.
+#: ``request`` is always ``None``: reuse is detected inside
+#: :class:`RotationPolicy <django_signet.sessions.rotation.RotationPolicy>`,
+#: which never sees the HTTP request that triggered it.
 token_reuse_detected = django.dispatch.Signal()
-family_revoked = django.dispatch.Signal()  # user, family, reason
+
+#: Sent the first time a family is revoked - logout, logout-all, reuse
+#: detection, password change, or an administrator - with ``user``,
+#: ``family`` and ``reason`` (a :class:`RevocationReason
+#: <django_signet.sessions.models.RevocationReason>` value), and no
+#: ``request``: it is sent by the store layer, not a view. Never sent a
+#: second time for the same family: revocation is first-reason-wins.
+family_revoked = django.dispatch.Signal()
 
 _NAMES: dict[django.dispatch.Signal, str] = {
     token_issued: "token_issued",

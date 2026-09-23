@@ -122,6 +122,14 @@ class SignetViewMixin:
 
 
 class TokenObtainView(SignetViewMixin, APIView):
+    """Login: verify credentials, open a session, attach the pair.
+
+    Unauthenticated by design (``AllowAny``) - a login endpoint that
+    required authentication could never be reached. ``serializer_class``
+    is a hook: swap it for email login, one-time codes, or anything else
+    that resolves to a user (see ``TokenObtainSerializer``).
+    """
+
     # Tuples, not lists: immutable, and Sequence[...] (the base class's
     # declared type) is happy with either - a list here would also trip
     # ruff's mutable-class-attribute check (RUF012), and annotating as
@@ -227,6 +235,15 @@ class RefreshCredentialView(SignetViewMixin, APIView):
 
 
 class TokenRefreshView(RefreshCredentialView):
+    """Redeem the refresh credential for a fresh pair.
+
+    A failed CSRF check answers 403 without touching the token; an absent
+    or otherwise invalid one (expired, revoked, reused) answers the same
+    generic 401 ``failure()`` every other endpoint uses, so a client
+    cannot distinguish "no session" from "session denied" by response
+    body alone.
+    """
+
     def post(self, request: Any) -> Response:
         try:
             raw = self.read_refresh_credential(request)
@@ -257,6 +274,13 @@ class TokenRefreshView(RefreshCredentialView):
 
 
 class TokenVerifyView(SignetViewMixin, APIView):
+    """Confirm the access credential this realm issued is still valid.
+
+    Authenticates through the realm's own authentication class - see
+    ``get_authenticators`` - rather than a project-wide DRF setting, so
+    verify always checks the same transport and strictness login used.
+    """
+
     authentication_classes: tuple[type[BaseAuthentication], ...] = (
         BaseJWTAuthentication,
     )

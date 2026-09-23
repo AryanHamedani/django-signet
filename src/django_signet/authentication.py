@@ -74,6 +74,11 @@ class BaseJWTAuthentication(BaseAuthentication):
     # ------------------------------------------------------------- template
 
     def authenticate(self, request: Any) -> tuple[Any, dict[str, Any]] | None:
+        """The fixed sequence: extract, verify, (maybe) CSRF, (maybe)
+        family liveness, application claims, user lookup. See the class
+        docstring for the two invariants this method enforces - never
+        override it directly; override the hooks instead.
+        """
         try:
             raw = self.get_token(request)
         except TransportError:

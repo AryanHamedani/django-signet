@@ -11,6 +11,13 @@ from django_signet.signals import family_revoked, send
 
 
 class RevocationReason(models.TextChoices):
+    """Every recorded reason a :class:`TokenFamily` can be revoked.
+
+    ``TokenFamily.revoke`` is first-reason-wins (see its docstring), so
+    the value recorded here is permanent: a later routine ``LOGOUT``
+    cannot overwrite an earlier ``REUSE_DETECTED`` security event.
+    """
+
     LOGOUT = "logout", "Logout"
     LOGOUT_ALL = "logout_all", "Logout everywhere"
     REUSE_DETECTED = "reuse_detected", "Refresh token reuse detected"
@@ -50,6 +57,8 @@ class TokenFamily(models.Model):
 
     @property
     def is_live(self) -> bool:
+        """Unrevoked and unexpired. A family expiring at exactly ``now``
+        is not live - the comparison is strict."""
         return self.revoked_at is None and self.expires_at > timezone.now()
 
     def revoke(self, reason: str) -> None:

@@ -15,12 +15,17 @@ from django_signet.sessions.stores.factory import get_store
 
 
 class Command(BaseCommand):
+    """``manage.py signet_purge`` - see the module docstring for why it
+    exists and how to schedule it."""
+
     help = (
         "Delete expired session families, and their refresh-token digests, "
         "from the configured token store."
     )
 
     def handle(self, *args: Any, **options: Any) -> None:
+        """Delete every expired family from the configured store and
+        report how many were purged."""
         _ = args, options  # BaseCommand's signature; this command takes none
         purged = get_store().purge_expired()
         noun = "family" if purged == 1 else "families"

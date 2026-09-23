@@ -24,7 +24,8 @@ class SigningBackend(abc.ABC):
     algorithm: str
 
     @abc.abstractmethod
-    def sign(self, payload: dict[str, Any]) -> str: ...
+    def sign(self, payload: dict[str, Any]) -> str:
+        """Return ``payload`` encoded and signed as a compact JWS string."""
 
     @abc.abstractmethod
     def _decode(
@@ -44,6 +45,11 @@ class SigningBackend(abc.ABC):
         issuer: str | None = None,
         leeway: timedelta = _ZERO,
     ) -> dict[str, Any]:
+        """Decode and verify ``token``, translating every failure into a
+        ``SignetError`` subclass - never a raw ``PyJWTError`` or another
+        crypto-library exception - so callers only ever handle this
+        library's own exception taxonomy.
+        """
         try:
             return self._decode(token, audience=audience, issuer=issuer, leeway=leeway)
         except jwt.ExpiredSignatureError as exc:
@@ -71,6 +77,8 @@ class HMACBackend(SigningBackend):
 
     @property
     def key(self) -> str:
+        """The HMAC key: the one passed to ``__init__``, or
+        ``settings.SECRET_KEY`` when none was given."""
         return self._key or django_settings.SECRET_KEY
 
     def sign(self, payload: dict[str, Any]) -> str:
