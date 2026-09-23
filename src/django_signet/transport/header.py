@@ -4,7 +4,7 @@ from typing import Any
 
 from django_signet.exceptions import TransportError
 from django_signet.transport.base import Transport
-from django_signet.transport.cookie import CookieTransport
+from django_signet.transport.cookie import CookiePolicy, CookieTransport
 
 
 class HeaderTransport(Transport):
@@ -71,10 +71,13 @@ class HybridTransport(Transport):
         return True
 
     @property
-    def policy(self) -> Any:
-        """Delegate to the cookie half. ``validate_csrf`` needs a policy,
-        and only the cookie path is ambient, so the cookie policy is the
-        right one to expose."""
+    def policy(self) -> CookiePolicy:
+        """Delegate to the cookie half: only the cookie path is ambient, so
+        the cookie policy is the one CSRF is issued and checked against."""
+        return self.cookie.policy
+
+    @property
+    def cookie_policy(self) -> CookiePolicy:
         return self.cookie.policy
 
     def _try(self, name: str, request: Any) -> str:

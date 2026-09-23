@@ -14,7 +14,7 @@ from typing import Any
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
-from django_signet.csrf import validate_csrf
+from django_signet.csrf import csrf_policy, validate_csrf
 from django_signet.exceptions import (
     SignetError,
     TokenRevoked,
@@ -59,6 +59,16 @@ class BaseJWTAuthentication(BaseAuthentication):
     store = ConfiguredStore()  # the configured SIGNET["STORE"]; see get_store()
     strict: bool = False
     enforce_csrf: bool = True
+
+    def __init__(self, transport: Transport | None = None) -> None:
+        """DRF instantiates authentication classes with no arguments, so the
+        class attribute is the default. A view passes its own ``transport``
+        (see ``TokenVerifyView.get_authenticators``) so that it verifies
+        exactly the credential it issues - never a second, independently
+        configured copy of it."""
+        super().__init__()
+        if transport is not None:
+            self.transport = transport
 
     # ------------------------------------------------------------- template
 
@@ -135,37 +145,13 @@ class BaseJWTAuthentication(BaseAuthentication):
 
     def _enforce_csrf_if_needed(self, request: Any) -> None:
         """Run the double-submit check when ``should_enforce_csrf`` says
-        to. Split out from that method - rather than reading
-        ``self.transport.policy`` there directly - because only
-        ``CookieTransport`` and ``HybridTransport`` carry a
-        ``CookiePolicy``; ``Transport`` itself does not. In this codebase
-        ``should_enforce_csrf`` only ever returns ``True`` for one of
-        those two (``HeaderTransport.is_ambient`` is always ``False``),
-        and the ``isinstance`` check here is what lets static typing
-        confirm that instead of assuming it.
-
-        A third-party ``Transport`` could in principle be ambient without
-        being either of those two - and if ``should_enforce_csrf`` says a
-        request needs CSRF enforcement, that decision must never be
-        silently dropped just because this method doesn't know how to
-        carry it out. The ``else`` branch below turns that combination
-        into a loud ``NotImplementedError`` instead of an unenforced
-        credential: a live security check that got skipped without a
-        trace is worse than one that breaks the request outright.
+        to, against the transport's own cookie policy. ``csrf_policy``
+        raises ``NotImplementedError`` for an ambient transport that has
+        none: a CSRF decision must never be silently dropped just because
+        there is nothing to validate it against.
         """
-        if not self.should_enforce_csrf(request):
-            return
-        if isinstance(self.transport, CookieTransport | HybridTransport):
-            validate_csrf(request, self.transport.policy)
-            return
-        raise NotImplementedError(
-            f"{type(self.transport).__name__}.is_ambient is True, so "
-            "should_enforce_csrf() requires a CSRF check, but this "
-            "transport carries no CookiePolicy for _enforce_csrf_if_needed() "
-            "to validate against. Give it a `.policy` (a CookiePolicy) or "
-            "override should_enforce_csrf()/_enforce_csrf_if_needed() to "
-            "handle it explicitly - do not let CSRF go silently unchecked."
-        )
+        if self.should_enforce_csrf(request):
+            validate_csrf(request, csrf_policy(self.transport))
 
     def check_family(self, claims: dict[str, Any]) -> None:
         """The ``Strict*`` half of the trade-off: one store lookup to

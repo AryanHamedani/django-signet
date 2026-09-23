@@ -5,6 +5,7 @@ import secrets
 from typing import Any
 
 from django_signet.exceptions import CSRFFailed
+from django_signet.transport.base import Transport
 from django_signet.transport.cookie import CookiePolicy
 
 CSRF_HEADER = "HTTP_X_CSRF_TOKEN"
@@ -12,6 +13,29 @@ CSRF_HEADER = "HTTP_X_CSRF_TOKEN"
 # GET/HEAD/OPTIONS/TRACE never mutate state, so double-submit adds nothing
 # for them - and requiring it would break plain navigation and preflight.
 SAFE_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
+
+def csrf_policy(transport: Transport) -> CookiePolicy:
+    """The ``CookiePolicy`` an ambient transport's CSRF cookie is issued
+    and validated against - the one lookup the authenticator and the views
+    share, rather than each reaching for ``transport.policy`` and assuming
+    it exists.
+
+    A transport that is ambient but carries no cookie policy cannot have
+    CSRF enforced for it, and that must never be silently skipped: a live
+    security check that got dropped without a trace is worse than one that
+    breaks the request outright, so this raises ``NotImplementedError``.
+    """
+    policy = transport.cookie_policy
+    if policy is None:
+        raise NotImplementedError(
+            f"CSRF protection was required for {type(transport).__name__}, "
+            "which has no cookie_policy to issue or validate the CSRF cookie "
+            "against. An ambient transport needs one; give it a "
+            "cookie_policy, or override should_enforce_csrf() to handle it "
+            "explicitly - do not let CSRF go silently unchecked."
+        )
+    return policy
 
 
 def new_csrf_token() -> str:

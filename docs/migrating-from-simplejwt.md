@@ -70,6 +70,24 @@ returns neither token in the body — `POST /api/auth/login` responds with
 
 If you'd rather keep bearer tokens in the response body (e.g. for a mobile
 client, or to change as little client code as possible during migration),
-use `HeaderJWTAuthentication` with `HeaderTransport` instead of the cookie
-classes — CSRF enforcement never applies to it, matching Simple JWT's own
-header-only default.
+use a header realm - every endpoint, login included, built from one
+`HeaderTransport` - with `HeaderJWTAuthentication` on your API views. CSRF
+enforcement never applies to it, matching Simple JWT's own header-only
+default:
+
+```python
+from django_signet.transport.header import HeaderTransport
+from django_signet.urls import signet_urls
+from django_signet.views import SignetViewMixin
+
+
+class ApiRealm(SignetViewMixin):
+    transport = HeaderTransport()
+
+
+urlpatterns = [path("api/auth/", include(signet_urls(ApiRealm)))]
+```
+
+Login returns `access` and `refresh` in the body, as Simple JWT does.
+Refresh takes `Authorization: Bearer <refresh>` and returns the successor
+pair in the body; logout takes `Authorization: Bearer <refresh>` too.
