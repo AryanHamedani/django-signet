@@ -154,8 +154,8 @@ Then set `CSRF_COOKIE` to the name of the CSRF cookie your server sets:
   `const CSRF_COOKIE = "signet-csrf";`
 - Over HTTPS, with the default settings, leave it as it is.
 
-If the name is wrong, the page sends the wrong CSRF header, so refresh and
-logout answer 403 and every write to your views answers 401.
+If the name is wrong, the page sends the wrong CSRF header, so refresh,
+logout and every write to your views answer 403.
 
 ## Step 8: Try it
 
@@ -233,9 +233,11 @@ session as well, see
 ### When a call answers 401
 
 `api()` sends the CSRF header on every unsafe method. A 401 from one of
-your views therefore usually means that the access token is missing or
-expired, or that the CSRF cookie `client.js` reads is not the one the
-server set. `api()` then refreshes once and retries. A call that needs a
+your views means that the access token is missing or expired; `api()`
+then refreshes once and retries. A failed CSRF check is a 403 instead -
+usually because the CSRF cookie `client.js` reads is not the one the
+server set - and `api()` does not refresh for it, since the session is
+fine. A call that needs a
 refresh while another is in flight waits for that one instead of starting
 its own.
 

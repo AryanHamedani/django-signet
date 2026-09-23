@@ -1,8 +1,9 @@
 # System checks
 
-Signet registers nine `manage.py check` functions under the `signet` tag,
-reporting eleven distinct message IDs between them. Source of truth:
-`src/django_signet/checks.py`.
+Signet registers ten `manage.py check` functions under the `signet` tag,
+reporting twelve distinct message IDs between them. Source of truth: the
+`src/django_signet/checks/` package - `settings.py`, `cookies.py` and
+`urls.py`.
 
 ## Two design rules
 
@@ -211,3 +212,17 @@ exhaustively introspected. A clean `manage.py check` means the
   the warning is expected; silence it with
   `SILENCED_SYSTEM_CHECKS = ["signet.W011"]` if you want a clean
   `manage.py check`.
+
+## `signet.W012` - `SameSite=None` without `Secure`
+
+- **Level:** Warning
+- **Triggers when:** `COOKIE_SAMESITE` is `"None"` (matched
+  case-insensitively) and `COOKIE_SECURE` is false.
+- **Why it matters:** Chromium-based browsers reject a `SameSite=None`
+  cookie that is not `Secure`, silently - the same invisible drop
+  `signet.E002` exists to catch - so requests arrive unauthenticated with
+  no error. A warning rather than an error because enforcement varies
+  between browser engines.
+- **Fix:** serve over HTTPS and leave `COOKIE_SECURE` on, or keep the
+  default `SameSite=Lax`, which a same-site frontend does not need to
+  change (see {doc}`../howto/spa`).

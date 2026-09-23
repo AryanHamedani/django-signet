@@ -220,7 +220,8 @@ how the name was set.
 - **Type:** `str`
 - **Default:** `"Lax"`
 - Passed straight through to `response.set_cookie(samesite=...)` for
-  every cookie this library sets.
+  every cookie this library sets. `"None"` with `COOKIE_SECURE` off is
+  `signet.W012`: browsers reject such a cookie.
 
 ### `COOKIE_SECURE`
 

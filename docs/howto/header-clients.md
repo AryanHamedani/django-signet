@@ -79,8 +79,8 @@ It revokes the session and answers 200 `{"detail": "Signed out."}`.
 
 A repeat answers 401, not 200. A header client has no cookies for logout to
 clear, so a refresh token that does not redeem, a repeat included, answers
-401 rather than reporting a sign-out. (A request with no `Authorization`
-header at all still answers 200.) This differs from the browser endpoints,
+401 rather than reporting a sign-out. So does a request with no
+`Authorization` header at all. This differs from the browser endpoints,
 where logout answers 200 to a dead refresh cookie sent with the CSRF
 header.
 

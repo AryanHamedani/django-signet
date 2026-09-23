@@ -10,11 +10,17 @@ put in ``SIGNET`` - the wrong shape entirely, or a field of the wrong type -
 the outcome has to be a reported message, not an unhandled traceback from
 ``manage.py check``. That would be the exact failure mode this module
 exists to prevent, one level up. ``_signet()`` degrades any non-dict
-``SIGNET`` to ``{}`` so every check below it is quiet rather than crashing;
-``check_signet_setting_shape`` is the one check that names the real
-problem. ``_as_str()`` gives the same treatment to individual fields inside
-the checks that dereference them: a field present with the wrong type is
-treated as absent rather than reaching a string API and raising.
+``SIGNET`` to ``{}`` for the checks that read it, so they are quiet rather
+than crashing; the two that read ``_raw_signet()`` instead
+(``check_token_store`` and ``check_refresh_cookie_path``) return nothing
+for a non-dict ``SIGNET``, and ``check_signet_setting_shape`` is the one
+check that names the real problem. ``_as_str()`` gives the same treatment
+to individual fields inside the checks that dereference them: a field
+present with the wrong type is treated as absent rather than reaching a
+string API and raising. The checks do still raise for two
+misconfigurations outside ``SIGNET`` that Django's own checks crash on
+too: an unimportable ``ROOT_URLCONF``, and a cache that cannot be built
+(an unimportable ``KEY_FUNCTION``, say).
 
 Surviving is not the same as passing, though: a check that silently falls
 back to a safe default for a wrong-typed setting produces a clean
@@ -25,13 +31,19 @@ so. ``check_setting_types`` is the one check that reports *that* - crash
 avoidance and misconfiguration reporting are two different jobs, done by
 two different functions.
 
-What these checks cannot see: configuration written as Python on a class.
-They read the ``SIGNET`` settings dict (and, for ``signet.E008``, the real
-URLconf); a ``CookiePolicy(secure=False, httponly=False)`` constructed in
-a subclass, a ``store = X()`` pinned on one class, or any hook override is
-arbitrary code, and cannot be exhaustively introspected. A clean
-``manage.py check`` means the *settings* are coherent - not that every
-class-level override is.
+What these checks mostly cannot see: configuration written as Python on a
+class. They read the ``SIGNET`` settings dict; ``signet.E008`` also walks
+the real URLconf and reads the ``CookiePolicy`` of each mounted
+refresh-credential view's transport, which is the one class-level value
+any check inspects. A ``CookiePolicy(secure=False, httponly=False)``
+constructed in a subclass, a ``store = X()`` pinned on one class, or any
+hook override is arbitrary code, and cannot be exhaustively introspected.
+A clean ``manage.py check`` means the *settings* are coherent - not that
+every class-level override is.
+
+The checks live in three modules - :mod:`~django_signet.checks.settings`,
+:mod:`~django_signet.checks.cookies` and :mod:`~django_signet.checks.urls` -
+and every one is importable from here.
 """
 
 from __future__ import annotations

@@ -15,12 +15,11 @@ ROOT = Path(__file__).resolve().parents[2]
 SETTINGS_PAGE = ROOT / "docs" / "reference" / "settings.md"
 CHECKS_PAGE = ROOT / "docs" / "reference" / "checks.md"
 CHECK_IDS = sorted(
-    set(
-        re.findall(
-            r"signet\.[EW]\d{3}",
-            (ROOT / "src" / "django_signet" / "checks.py").read_text(),
-        )
-    )
+    {
+        check_id
+        for module in (ROOT / "src" / "django_signet" / "checks").glob("*.py")
+        for check_id in re.findall(r"signet\.[EW]\d{3}", module.read_text())
+    }
 )
 
 

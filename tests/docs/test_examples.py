@@ -138,9 +138,10 @@ def test_quickstart_view_uses_the_rest_framework_defaults(quickstart, user):
     client.post(reverse("django_signet:login"), CREDENTIALS, format="json")
     csrf = client.cookies[CookiePolicy().csrf_name].value
     assert client.get("/api/notes").json() == {"user": "alice"}
-    # No CSRF header: the authenticator's generic 401, not refresh's 403.
+    # No CSRF header: a 403, as at refresh - the session is fine, so the
+    # client must not be sent to refresh it.
     refused = client.post("/api/notes")
-    assert refused.status_code == 401
+    assert refused.status_code == 403
     assert refused.json() == {"detail": GENERIC_FAILURE}
     created = client.post("/api/notes", headers={wire_header(CSRF_HEADER): csrf})
     assert created.status_code == 201
@@ -352,8 +353,8 @@ def test_header_client_flow(header_realm, user):
     gone = client.post(reverse("mobile:refresh"), headers=_bearer(new["refresh"]))
     assert gone.status_code == 401
 
-    # With no credential at all there is nothing to revoke.
-    assert client.post(reverse("mobile:logout")).status_code == 200
+    # With no credential at all a header client is not told it signed out.
+    assert client.post(reverse("mobile:logout")).status_code == 401
 
 
 def test_header_realm_mount_passes_the_refresh_path_check(header_realm):

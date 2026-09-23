@@ -71,8 +71,9 @@ def check_setting_types(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
     never raise - but a silent fallback to a default is not the same as a
     passing configuration. ``ALGORITHM=123`` or
     ``COOKIE_REFRESH_NAME=999`` both pass every other check cleanly and
-    both fail at request time (``get_backend()`` rejects a non-string
-    algorithm; a non-string cookie name can never be set on a response).
+    both fail at request time (``get_backend()`` raises ``AttributeError``
+    on a non-string algorithm; login fails setting a non-string cookie
+    name on its response).
     This is the check that says so at startup instead.
     """
     cfg = _signet()
@@ -164,7 +165,8 @@ def check_signing_key(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
                 hint="RSA algorithms need an explicit PEM public key "
                 "(VERIFYING_KEY); SECRET_KEY is not a valid RSA key. "
                 "get_backend() raises ImproperlyConfigured without it, so "
-                "no token can be verified and every request would fail.",
+                "no token can be verified or issued: every login, refresh and "
+                "authenticated request fails.",
                 id="signet.E004",
             )
         )
@@ -200,7 +202,8 @@ def check_token_store(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
     Warning, not Error, for the second: ``CacheTokenStore`` is a supported,
     documented configuration. But under it a password change revokes
     nothing (the receiver logs a warning and lets the save through) and
-    logout-all answers 501 - and a deployment should learn that from
+    logout-all answers 501 to a request whose refresh token verifies and
+    passes CSRF - and a deployment should learn that from
     ``manage.py check``, not from an incident. ``signet.W014`` warns about
     a store backed by ``FileBasedCache``, whose ``add()`` is not atomic.
 
@@ -249,8 +252,9 @@ def check_token_store(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
             "revoke every session for a user: password-change revocation "
             "and logout-all are unavailable under it.",
             hint="A password change will be saved but will leave existing "
-            "sessions live until they expire, and POST logout-all returns "
-            "501. Use ORMTokenStore if either matters; see docs/stores.md.",
+            "sessions live until they expire, and POST logout-all answers "
+            "501 to a request whose refresh token verifies and passes CSRF. "
+            "Use ORMTokenStore if either matters; see docs/stores.md.",
             id="signet.W007",
         ),
     ]
