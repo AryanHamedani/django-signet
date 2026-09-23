@@ -53,6 +53,40 @@ def test_a_security_revocation_cannot_be_overridden_by_a_routine_one(user):
     assert fam.revoked_reason == RevocationReason.REUSE_DETECTED
 
 
+def test_a_security_revocation_survives_a_racing_instance(user):
+    """The persistence-level counterpart of the test above.
+
+    Both prior idempotency tests call ``revoke()`` twice on the *same*
+    Python instance, so an in-memory-only guard (``if self.revoked_at is
+    not None: return``) short-circuits the second call and both tests pass
+    even though nothing stops two independently-loaded instances of the
+    same row from both seeing ``revoked_at is None`` and both writing. That
+    is exactly the reuse-detected-during-a-race-with-a-logout-request
+    scenario the security guarantee exists for, so it has to be exercised
+    with two separate instances fetched before either is revoked.
+    """
+    fam = _family(user)
+    fam1 = TokenFamily.objects.get(pk=fam.pk)
+    fam2 = TokenFamily.objects.get(pk=fam.pk)
+
+    received: list[dict[str, object]] = []
+
+    def handler(**kwargs: object) -> None:
+        received.append(kwargs)
+
+    family_revoked.connect(handler, dispatch_uid="test-race-signal")
+    try:
+        fam1.revoke(RevocationReason.REUSE_DETECTED)
+        fam2.revoke(RevocationReason.LOGOUT)
+    finally:
+        family_revoked.disconnect(dispatch_uid="test-race-signal")
+
+    stored = TokenFamily.objects.get(pk=fam.pk)
+    assert stored.revoked_reason == RevocationReason.REUSE_DETECTED
+    assert len(received) == 1
+    assert received[0]["reason"] == RevocationReason.REUSE_DETECTED
+
+
 def test_revoke_fires_the_signal_only_on_the_first_call(user):
     """A revoke() that forgets the early return would still make the other
     idempotency tests fail on the *reason*, but a version that resets the
@@ -79,6 +113,21 @@ def test_an_expired_family_is_not_live(user):
     fam = TokenFamily.objects.create(
         user=user, expires_at=timezone.now() - timedelta(seconds=1)
     )
+    assert fam.is_live is False
+
+
+def test_a_family_expiring_at_this_exact_instant_is_not_live(user, monkeypatch):
+    """``is_live`` uses ``expires_at > now()`` (strictly greater), so the
+    instant a family's expiry equals "now" it is already not live. Real
+    clock reads always advance between the two calls, so comparing against
+    an ordinary "one second past expiry" case (see above) can't tell ``>``
+    apart from ``>=``. Freezing ``timezone.now()`` to the exact value used
+    as ``expires_at`` pins that boundary: under ``>=`` this would flip to
+    live and the test would fail.
+    """
+    frozen = timezone.now()
+    fam = TokenFamily.objects.create(user=user, expires_at=frozen)
+    monkeypatch.setattr("django_signet.sessions.models.timezone.now", lambda: frozen)
     assert fam.is_live is False
 
 
