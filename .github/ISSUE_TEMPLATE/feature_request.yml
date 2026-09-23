@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest a capability
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you unable to do today?
+    validations: { required: true }
+  - type: textarea
+    id: subclass
+    attributes:
+      label: Can a subclass already do this?
+      description: >
+        Most behaviour is meant to be changed by overriding a hook rather than
+        by adding a setting. Say what you tried.
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      render: python
