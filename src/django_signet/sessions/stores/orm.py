@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Any
+
+from django.utils import timezone
+
+from django_signet.models import IssuedToken, TokenFamily
+from django_signet.sessions.stores.base import ConsumeResult, Outcome, TokenStore
+
+
+class ORMTokenStore(TokenStore):
+    """Default store. Allowlist semantics: a family must exist and be live.
+
+    ``consume()`` is classify-then-claim rather than the
+    ``select_for_update()``-in-a-transaction shape one might reach for
+    first. ``select_for_update()`` is a no-op on SQLite - a deferred
+    transaction lets two concurrent callers both observe
+    ``consumed_at IS NULL`` and both proceed, which makes reuse detection
+    silently unreliable on exactly the backend this project tests against.
+    A conditional ``UPDATE ... WHERE consumed_at IS NULL`` is atomic on
+    every backend and needs no row locking: the database, not this
+    process, decides which caller's write wins.
+    """
+
+    def open_family(
+        self,
+        user: Any,
+        expires_at: datetime,
+        *,
+        user_agent: str = "",
+        ip_address: str | None = None,
+    ) -> TokenFamily:
+        return TokenFamily.objects.create(
+            user=user,
+            expires_at=expires_at,
+            user_agent=user_agent[:256],
+            ip_address=ip_address,
+        )
+
+    def issue(
+        self, family: TokenFamily, digest: str, expires_at: datetime
+    ) -> IssuedToken:
+        return IssuedToken.objects.create(
+            family=family, digest=digest, expires_at=expires_at
+        )
+
+    def consume(self, digest: str) -> ConsumeResult:
+        try:
+            token = IssuedToken.objects.select_related("family").get(digest=digest)
+        except IssuedToken.DoesNotExist:
+            return ConsumeResult(Outcome.NOT_FOUND)
+
+        family = token.family
+        now = timezone.now()
+        if family.revoked_at is not None:
+            return ConsumeResult(Outcome.FAMILY_REVOKED, family, token)
+        if token.expires_at <= now or family.expires_at <= now:
+            return ConsumeResult(Outcome.EXPIRED, family, token)
+
+        return self._claim(token, family, now)
+
+    def _claim(
+        self, token: IssuedToken, family: TokenFamily, now: datetime
+    ) -> ConsumeResult:
+        """The atomic step: claim the token if, and only if, the database
+        still shows it unconsumed at write time. A zero-row result means
+        another caller's claim won the race - that is ALREADY_CONSUMED,
+        which is what triggers reuse detection upstream."""
+        claimed = IssuedToken.objects.filter(
+            pk=token.pk, consumed_at__isnull=True
+        ).update(consumed_at=now)
+        if not claimed:
+            return ConsumeResult(Outcome.ALREADY_CONSUMED, family, token)
+
+        token.consumed_at = now
+        TokenFamily.objects.filter(pk=family.pk).update(last_used_at=now)
+        return ConsumeResult(Outcome.LIVE, family, token)
+
+    def is_live(self, family_id: uuid.UUID) -> bool:
+        return TokenFamily.objects.filter(
+            pk=family_id, revoked_at__isnull=True, expires_at__gt=timezone.now()
+        ).exists()
+
+    def revoke_family(self, family_id: uuid.UUID, reason: str) -> None:
+        try:
+            family = TokenFamily.objects.get(pk=family_id)
+        except TokenFamily.DoesNotExist:
+            return
+        family.revoke(reason)
+
+    def revoke_all_for_user(self, user: Any, reason: str) -> None:
+        """Each ``revoke()`` call is already an atomic, idempotent
+        conditional UPDATE (see ``TokenFamily.revoke``), so no additional
+        locking is needed here - and, per the same reasoning that rules out
+        ``select_for_update()`` in ``consume()``, one would not help on
+        SQLite anyway."""
+        for family in TokenFamily.objects.filter(user=user, revoked_at__isnull=True):
+            family.revoke(reason)
+
+    def purge_expired(self) -> int:
+        qs = TokenFamily.objects.filter(expires_at__lte=timezone.now())
+        count = qs.count()
+        qs.delete()
+        return count
