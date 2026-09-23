@@ -272,9 +272,9 @@ def test_logout_all_without_an_access_cookie_revokes_every_session(client, accou
 
 
 def test_logout_all_with_a_dead_session_revokes_nothing_else(client, account):
-    """Stricter than logout: an old refresh token from an already-revoked
-    family must not be able to log its user out everywhere - replaying it
-    at refresh only ever burns its own family."""
+    """An old refresh token from an already-revoked family must not be
+    able to log its user out everywhere - replaying it at refresh only
+    ever burns its own family."""
     _login(client)
     other = APIClient()
     _login(other)

@@ -15,8 +15,9 @@ design flaw demands it, and every such change is listed here.
   mint new tokens, and its session is burned
 - Custom claims (`get_claims`) are re-derived on every refresh
 - Logout and logout-all act on the refresh credential, so they work after
-  the access cookie has expired; logout is idempotent and always clears
-  cookies
+  the access cookie has expired, and redeem the refresh token rather than
+  merely checking its family; logout is idempotent, and a response clears
+  cookies only when the request presented a credential and passed CSRF
 - `TokenStore` port with ORM and cache adapters, allowlist or denylist,
   chosen by one `SIGNET["STORE"]` setting for every component
 - Stateless access verification plus opt-in `Strict*` classes
