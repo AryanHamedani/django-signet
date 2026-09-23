@@ -9,18 +9,14 @@ is still live. See the class docstring for how the hooks fit together.
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
-from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
 from django_signet.csrf import validate_csrf
 from django_signet.exceptions import (
     SignetError,
-    TokenInvalid,
     TokenRevoked,
     TransportError,
 )
@@ -28,20 +24,16 @@ from django_signet.sessions.stores.base import TokenStore
 from django_signet.sessions.stores.orm import ORMTokenStore
 from django_signet.tokens.access import AccessToken
 from django_signet.tokens.base import Token
+from django_signet.tokens.claims import session_id
 from django_signet.transport.base import Transport
 from django_signet.transport.cookie import CookieTransport
 from django_signet.transport.header import HeaderTransport, HybridTransport
+from django_signet.users import get_active_user
 
 # One message for every failure, whatever the cause. A reviewer greps this
 # string across the test suite - it must never vary with what actually
 # went wrong, or the client learns which check failed.
 GENERIC_FAILURE = "Invalid or expired credentials."
-
-# Sentinel distinguishing "no is_active attribute at all" from an actual
-# value, including a falsy one - getattr's own default can't do that,
-# since None (or False) is a legitimate value we'd otherwise conflate
-# with "not present".
-_NO_IS_ACTIVE: Any = object()
 
 
 class BaseJWTAuthentication(BaseAuthentication):
@@ -105,40 +97,13 @@ class BaseJWTAuthentication(BaseAuthentication):
     def get_user(self, claims: dict[str, Any]) -> Any:
         """Resolve ``claims['sub']`` to a user and reject an inactive one.
 
-        This deliberately does NOT mirror Django's own
-        ``ModelBackend.user_can_authenticate``, which treats a missing
-        ``is_active`` attribute as active - safe there only because
-        ``AbstractBaseUser`` guarantees the attribute exists. This is an
-        auth *library* whose job includes hardening against
-        CVE-2024-22513 - "disabled accounts keep working" - so it fails
-        closed instead: a user model that doesn't define ``is_active`` at
-        all is rejected, not silently trusted. Any conventional user model
-        (anything deriving from ``AbstractBaseUser``/``AbstractUser``) is
-        unaffected, since it always has the attribute.
+        Delegates to :func:`django_signet.users.get_active_user`, the same
+        function the refresh path uses, so a disabled account is refused
+        identically whether it presents an access token here or a refresh
+        token to ``RotationPolicy.rotate``. See that module for why a user
+        model with no ``is_active`` attribute at all fails closed.
         """
-        user_model = get_user_model()
-        try:
-            user = user_model.objects.get(pk=claims["sub"])
-        except (
-            user_model.DoesNotExist,
-            KeyError,
-            ValueError,
-            TypeError,
-            # What a UUID-keyed custom user model's UUIDField.get_prep_value()
-            # raises for a `sub` that isn't a valid UUID - without this, a
-            # malformed subject on such a model is an unhandled 500 with the
-            # raw claim value in a debug traceback, not the generic 401
-            # every other bad-credential cause here produces.
-            ValidationError,
-        ) as exc:
-            raise TokenInvalid("credential subject could not be resolved") from exc
-
-        is_active = getattr(user, "is_active", _NO_IS_ACTIVE)
-        if is_active is _NO_IS_ACTIVE:
-            raise TokenRevoked("credential subject has no is_active attribute")
-        if not is_active:
-            raise TokenRevoked("credential subject is not active")
-        return user
+        return get_active_user(claims.get("sub"))
 
     def validate_claims(self, claims: dict[str, Any]) -> None:
         """Override to enforce application-specific claims (tenant, scope,
@@ -208,13 +173,7 @@ class BaseJWTAuthentication(BaseAuthentication):
         confirm the session family named by ``sid`` is still live, so a
         revoked session stops authenticating immediately rather than only
         once its still-valid access token expires on its own."""
-        sid = claims.get("sid")
-        if not sid:
-            raise TokenRevoked("token carries no session id")
-        try:
-            family_id = uuid.UUID(str(sid))
-        except ValueError as exc:
-            raise TokenInvalid("token carries a malformed session id") from exc
+        family_id = session_id(claims)
         if not self.store.is_live(family_id):
             raise TokenRevoked("session is no longer live")
 

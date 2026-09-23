@@ -6,6 +6,8 @@ from typing import Any
 
 from django.utils import timezone
 
+from django_signet.exceptions import TokenInvalid, TokenRevoked
+
 
 def build_claims(
     *,
@@ -52,3 +54,20 @@ def build_claims(
 
     claims: dict[str, Any] = {**(extra or {}), **reserved}
     return claims, expires_at
+
+
+def session_id(claims: dict[str, Any]) -> uuid.UUID:
+    """The session family a verified token names in its ``sid`` claim.
+
+    Raises ``TokenRevoked`` when the claim is absent - a token that names
+    no session cannot belong to a live one - and ``TokenInvalid`` when it
+    is present but not a UUID. The one parser for ``sid``: the ``Strict*``
+    liveness check and every refresh-credential revocation both use it.
+    """
+    sid = claims.get("sid")
+    if not sid:
+        raise TokenRevoked("token carries no session id")
+    try:
+        return uuid.UUID(str(sid))
+    except ValueError as exc:
+        raise TokenInvalid("token carries a malformed session id") from exc
