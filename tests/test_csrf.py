@@ -67,6 +67,37 @@ def test_issue_uses_the_provided_token_instead_of_generating_one():
     assert response.cookies[POLICY.csrf_name].value == "fixed-token"
 
 
+@pytest.mark.parametrize(
+    ("policy", "expected_secure", "expected_samesite", "expected_domain"),
+    [
+        (CookiePolicy(), True, "Lax", ""),
+        (
+            CookiePolicy(secure=False, samesite="Strict", domain="example.com"),
+            "",
+            "Strict",
+            "example.com",
+        ),
+    ],
+)
+def test_issue_propagates_the_policys_cookie_flags(
+    policy, expected_secure, expected_samesite, expected_domain
+):
+    """issue_csrf forwards policy.secure/.samesite/.domain into set_cookie,
+    but no other test in this file ever constructs a policy whose flags
+    differ from CookiePolicy()'s defaults, so a version of issue_csrf that
+    dropped secure=policy.secure - shipping the CSRF cookie without Secure
+    while the access/refresh cookies keep it, exactly the downgrade the
+    Secure flag exists to prevent - would still pass every other test
+    here. Parametrising over two policies whose secure/samesite/domain
+    actually differ means a hardcoded value fails at least one case."""
+    response = HttpResponse()
+    issue_csrf(response, policy)
+    cookie = response.cookies[policy.csrf_name]
+    assert cookie["secure"] == expected_secure
+    assert cookie["samesite"] == expected_samesite
+    assert cookie["domain"] == expected_domain
+
+
 def test_matching_cookie_and_header_passes():
     validate_csrf(_request(cookie="tok", header="tok"), POLICY)
 
