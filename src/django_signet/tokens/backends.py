@@ -6,6 +6,7 @@ from typing import Any
 
 import jwt
 from django.conf import settings as django_settings
+from django.core.exceptions import ImproperlyConfigured
 
 from django_signet.conf import setting
 from django_signet.exceptions import TokenExpired, TokenInvalid
@@ -47,9 +48,15 @@ class SigningBackend(abc.ABC):
             return self._decode(token, audience=audience, issuer=issuer, leeway=leeway)
         except jwt.ExpiredSignatureError as exc:
             raise TokenExpired(str(exc)) from exc
-        except jwt.PyJWTError as exc:
-            # Covers bad signature, alg=none, algorithm substitution,
-            # wrong audience, wrong issuer and malformed input alike.
+        except (jwt.PyJWTError, UnicodeError, TypeError, ValueError) as exc:
+            # Covers bad signature, alg=none, algorithm substitution, wrong
+            # audience, wrong issuer, and malformed input alike. The non-
+            # PyJWTError types are here because PyJWT's own internals are not
+            # exhaustively guarded: e.g. a lone UTF-16 surrogate in the token
+            # reaches an unguarded `.encode("utf-8")` in PyJWS._load and
+            # raises UnicodeEncodeError (a ValueError) rather than a
+            # PyJWTError. ImproperlyConfigured is deliberately not caught
+            # here - a misconfigured server is a 500, not a failed token.
             raise TokenInvalid(str(exc)) from exc
 
 
@@ -107,7 +114,7 @@ class RSABackend(SigningBackend):
 
     def sign(self, payload: dict[str, Any]) -> str:
         if self.private_key is None:
-            raise ValueError("RSABackend requires a private_key to sign")
+            raise ImproperlyConfigured("RSABackend requires a private_key to sign")
         return jwt.encode(payload, self.private_key, algorithm=self.algorithm)
 
     def _decode(
@@ -119,7 +126,7 @@ class RSABackend(SigningBackend):
         leeway: timedelta,
     ) -> dict[str, Any]:
         if self.public_key is None:
-            raise ValueError("RSABackend requires a public_key to verify")
+            raise ImproperlyConfigured("RSABackend requires a public_key to verify")
         return jwt.decode(
             token,
             self.public_key,
@@ -143,6 +150,10 @@ def get_backend() -> SigningBackend:
     if cfg.algorithm.startswith("HS"):
         return HMACBackend(algorithm=cfg.algorithm, key=cfg.signing_key)
     if cfg.algorithm.startswith("RS"):
+        if cfg.verifying_key is None:
+            raise ImproperlyConfigured(
+                "SIGNET['VERIFYING_KEY'] must be set to use an RS algorithm"
+            )
         return RSABackend(
             algorithm=cfg.algorithm,
             private_key=cfg.signing_key,
