@@ -102,7 +102,7 @@ backend's `add()` is atomic.
 Redis, Memcached, `DatabaseCache` and, within one process, `LocMemCache`
 implement `add()` atomically. `FileBasedCache` does not: it checks for the
 key, then writes it, so two requests can both win. Never use it for the
-store.
+store; `manage.py check` warns about it as `signet.W014`.
 
 What `add()` cannot do is also check the session's revocation in the same
 step. `ORMTokenStore` rechecks `revoked_at IS NULL` inside the `UPDATE` that

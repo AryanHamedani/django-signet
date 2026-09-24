@@ -108,7 +108,8 @@ timeout is the window, but `DatabaseCache` and `FileBasedCache` keep
 expired entries until they are read or culled, so there a copy of the
 table or directory can hold live refresh tokens long after the window.
 Use a cache that expires entries itself, such as Redis or Memcached, or set
-`GRACE_CACHE` to `None`, and limit who can read it.
+`GRACE_CACHE` to `None`, and limit who can read it. `manage.py check`
+warns about the two backends as `signet.W013`.
 
 ## Purge expired sessions
 

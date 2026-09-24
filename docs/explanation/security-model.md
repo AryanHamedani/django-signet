@@ -167,7 +167,7 @@ This has two costs, which you should weigh:
   expired entries until they are read or culled, so there a copy of the
   table or directory can hold live refresh tokens long after the window.
   Use a cache that expires entries itself, such as Redis or Memcached, or
-  set `GRACE_CACHE` to `None`.
+  set `GRACE_CACHE` to `None`; `signet.W013` warns about the other two.
 - **Inside the window, a replay is indistinguishable from a retry.** A
   thief who presents a token within the window after its owner refreshed
   receives the same pair, and nothing is detected.
