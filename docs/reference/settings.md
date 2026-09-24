@@ -141,8 +141,10 @@ literal does.
   family - a legitimate choice, not a misconfiguration, so it is not
   reported by any system check. An alias that does not name a configured
   cache **is** reported, as `signet.W003`: rotation still works, but
-  every double-tab replay is then indistinguishable from theft. Consumed
-  as `RotationPolicy.grace_cache`.
+  every double-tab replay is then indistinguishable from theft. An alias
+  naming a `DatabaseCache` or `FileBasedCache` is `signet.W013`: those
+  keep expired entries, each holding a live refresh token. Consumed as
+  `RotationPolicy.grace_cache`.
 
 ## Token store settings
 

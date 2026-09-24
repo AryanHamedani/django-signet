@@ -1,7 +1,7 @@
 # System checks
 
 Signet registers ten `manage.py check` functions under the `signet` tag,
-reporting twelve distinct message IDs between them. Source of truth: the
+reporting fourteen distinct message IDs between them. Source of truth: the
 `src/django_signet/checks/` package - `settings.py`, `cookies.py` and
 `urls.py`.
 
@@ -226,3 +226,33 @@ exhaustively introspected. A clean `manage.py check` means the
 - **Fix:** serve over HTTPS and leave `COOKIE_SECURE` on, or keep the
   default `SameSite=Lax`, which a same-site frontend does not need to
   change (see {doc}`../howto/spa`).
+
+## `signet.W013` - grace cache keeps expired entries
+
+- **Level:** Warning
+- **Triggers when:** `GRACE_CACHE` names a `DatabaseCache` or a
+  `FileBasedCache` (or a subclass of either).
+- **Why it matters:** a grace entry holds the raw successor pair, and its
+  refresh token stays valid until the session next refreshes. The entry's
+  timeout is the grace window, but these backends delete an expired entry
+  only when it is read or culled, and a grace entry is read only when its
+  spent token is replayed. A copy of that table or directory can therefore
+  hold live refresh tokens long after the window. See
+  [the grace window](../explanation/security-model.md#the-grace-window).
+- **Fix:** point `GRACE_CACHE` at a cache that expires entries itself,
+  such as Redis or Memcached, or set it to `None` for strict RFC 9700
+  behaviour.
+
+## `signet.W014` - token store on a `FileBasedCache`
+
+- **Level:** Warning
+- **Triggers when:** the configured token store exposes a `cache` that is
+  a `FileBasedCache` - `CacheTokenStore` with `STORE_OPTIONS` naming such
+  an alias, for example. Duck-typed on the store's `cache` attribute,
+  because a check may not import a concrete store.
+- **Why it matters:** `FileBasedCache.add()` checks for the key, then
+  writes it, so two concurrent refreshes of one token can both win the
+  claim, and reuse detection misses the replay.
+- **Fix:** back the store with Redis, Memcached or `DatabaseCache`; see
+  {doc}`../howto/choosing-a-store`.
+
