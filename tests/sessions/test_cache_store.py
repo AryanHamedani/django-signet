@@ -299,3 +299,48 @@ def test_revoking_an_unknown_family_fires_nothing(store):
 def test_the_store_declares_that_it_cannot_revoke_all_for_a_user(store):
     """What signet.W007 reads: a capability, not an isinstance check."""
     assert CacheTokenStore.supports_revoke_all_for_user is False
+
+
+def _recorded_add_timeouts(store, monkeypatch):
+    timeouts = {}
+    real_add = store.cache.add
+
+    def add(key, value, timeout=None, version=None):
+        timeouts[key] = timeout
+        return real_add(key, value, timeout, version)
+
+    monkeypatch.setattr(store.cache, "add", add)
+    return timeouts
+
+
+def test_a_revocation_marker_expires_once_nothing_it_guards_can_verify(
+    store, user, monkeypatch
+):
+    """Markers used to be written with no timeout, so under a noeviction
+    policy every logout added a key that was never removed, until the
+    cache refused writes. The bound: the family's remaining lifetime, plus
+    the refresh and access lifetimes and LEEWAY - after that no token of
+    the family can verify, so the denylist cannot revive it."""
+    fam = _open(store, user)
+    timeouts = _recorded_add_timeouts(store, monkeypatch)
+
+    store.revoke_family(fam.id, RevocationReason.LOGOUT)
+
+    expected = FUTURE + timedelta(days=14) + timedelta(minutes=5)
+    timeout = timeouts[_REVOKED.format(fam.id)]
+    assert timeout is not None
+    assert abs(timeout - expected.total_seconds()) <= 2
+
+
+def test_a_marker_for_a_family_the_cache_no_longer_holds_is_bounded_too(
+    store, monkeypatch
+):
+    """No token of an unheld family can be minted from now on, so the
+    bound starts from now."""
+    timeouts = _recorded_add_timeouts(store, monkeypatch)
+    family_id = uuid.uuid4()
+
+    store.revoke_family(family_id, RevocationReason.ADMIN)
+
+    expected = timedelta(days=14) + timedelta(minutes=5)
+    assert abs(timeouts[_REVOKED.format(family_id)] - expected.total_seconds()) <= 2
