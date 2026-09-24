@@ -45,7 +45,7 @@ docs = [
 
 [project.urls]
 Homepage = "https://github.com/AryanHamedani/django-signet"
-Documentation = "https://github.com/AryanHamedani/django-signet#readme"
+Documentation = "https://django-signet.readthedocs.io"
 Changelog = "https://github.com/AryanHamedani/django-signet/blob/main/CHANGELOG.md"
 Issues = "https://github.com/AryanHamedani/django-signet/issues"
 Source = "https://github.com/AryanHamedani/django-signet"
