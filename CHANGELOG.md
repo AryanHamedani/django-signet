@@ -120,3 +120,14 @@ design flaw demands it, and every such change is listed here.
   verified against the `AUDIENCE` and `ISSUER` settings: an `aud` with
   `AUDIENCE` unset made every token fail verification, and an `iss` was
   signed and never checked.
+- `CacheTokenStore` revocation markers now expire. They were written with
+  no timeout, so under a `noeviction` policy every logout and burn added
+  a key that was never removed, until the cache refused writes. A marker
+  now lives for the family's remaining lifetime plus the refresh and
+  access lifetimes and `LEEWAY`. After that no token of the family can
+  verify, so the denylist cannot revive it.
+- The `CacheTokenStore` docstring no longer claims every Django cache
+  backend implements `add()` atomically: `FileBasedCache` does not, and
+  must never back the store.
+- Refresh loads the user once, not twice. `SessionPair` gains an optional
+  `user`, which `token_refreshed` now receives without a second query.
