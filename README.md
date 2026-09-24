@@ -5,8 +5,8 @@
 Polymorphic, secure-by-default JWT authentication for Django REST Framework.
 
 Authentication stays in the backend: both tokens travel in httpOnly
-cookies, rotate on every refresh, and never appear in a response body or
-in JavaScript. The server handles rotation, reuse detection and CSRF.
+cookies, rotate on every refresh, and, with the default cookie transport,
+never appear in a response body or in JavaScript. The server handles rotation, reuse detection and CSRF.
 
 **Documentation: <https://django-signet.readthedocs.io>**
 
@@ -24,7 +24,7 @@ names the module behind each row, and what Simple JWT does better.
 | Refresh rotation | opt-in (`ROTATE_REFRESH_TOKENS`) | always on |
 | Replay of a spent refresh token | refused if it was blacklisted after rotation; nothing else is revoked | after a short grace window, revokes the whole session (RFC 9700 / BCP 240) |
 | Revoking access tokens | not checked against the blacklist; `CHECK_REVOKE_TOKEN` (off by default) refuses tokens minted before a password change | opt-in per view, for any revocation, through the `Strict*` authentication classes |
-| Refresh tokens at rest | with the blacklist app, `OutstandingToken.token` stores the raw token in a `TextField` | SHA-256 digest only |
+| Refresh tokens at rest | with the blacklist app, `OutstandingToken.token` stores the raw token in a `TextField` | SHA-256 digest in the token store; the grace cache is the one exception |
 | Allowlist or denylist | denylist only (the blacklist app) | one `TokenStore` port, either mode |
 | Storage | the database, through the blacklist app | the database or a Django cache, chosen by one `SIGNET["STORE"]` setting |
 | Customisation | one `SIMPLE_JWT` dict, partly dotted import paths; `serializer_class` per view | subclassing, per realm or per view |

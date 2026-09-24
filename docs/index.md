@@ -6,8 +6,8 @@ Signet keeps both tokens in httpOnly cookies, out of reach of your
 JavaScript, and handles the rest on the server: it rotates the refresh
 token on every refresh, revokes the whole session when a spent refresh
 token is presented again after a short grace window, checks a CSRF token
-on every cookie-authenticated write, and stores refresh tokens only as
-SHA-256 digests.
+on every cookie-authenticated write, and keeps refresh tokens in its
+token store only as SHA-256 digests.
 
 It is for Django REST Framework projects whose API is called from a
 browser, by a frontend on the same site. Mobile apps and other services
@@ -27,8 +27,9 @@ rename a hook or change its signature; every such change is listed in the
 pip install django-signet
 ```
 
-Add `"rest_framework"` and `"django_signet"` to `INSTALLED_APPS`, then
-mount the endpoints with `path("api/auth/", include("django_signet.urls"))`.
+Add `"rest_framework"` and `"django_signet"` to `INSTALLED_APPS`, mount
+the endpoints with `path("api/auth/", include("django_signet.urls"))`, and
+run `python manage.py migrate`.
 The {doc}`tutorial/quickstart` does this step by step.
 
 ## The documentation
@@ -40,7 +41,8 @@ The {doc}`tutorial/quickstart` does this step by step.
 {doc}`howto/index`
 : Solve one problem: a frontend on another subdomain, mobile clients, a
   second realm, custom claims, alerting on token theft, RS256 keys,
-  choosing a store, deploying, migrating from Simple JWT.
+  purging expired sessions, choosing a store, deploying, migrating from
+  Simple JWT.
 
 {doc}`reference/index`
 : Look up exact behaviour: every setting, system check, class, endpoint and

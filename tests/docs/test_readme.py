@@ -1,10 +1,12 @@
 """``README.md`` is also the PyPI description, so it cannot ``literalinclude``
 the tested examples. These tests hold it to them instead, and check that every
-link into the documentation site names a page and a heading that exist.
+link is absolute (PyPI resolves no relative link) and that every link into the
+documentation site names a published page and a heading that exist on it.
 """
 
 import ast
 import re
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -18,14 +20,57 @@ LINKS = sorted(set(re.findall(re.escape(SITE) + r"([^)\s]*)", README)))
 BLOCKS = re.findall(r"```python\n(.*?)```", README, re.DOTALL)
 
 
-def _slug(heading):
-    """MyST's default heading slug (``myst_parser``'s ``default_slugify``)."""
-    return re.sub(r"[^\w\- ]", "", heading.strip().lower().replace(" ", "-"))
+LINK_TARGETS = re.findall(r"\]\(([^)\s]+)\)", README)
+
+
+def _html_id(heading):
+    """The ``id`` Sphinx gives a section in the HTML: ``docutils.nodes.make_id``
+    of its title. An ASCII copy, because the test job does not install
+    docutils; ``test_html_id_matches_docutils`` holds it to the real one."""
+    text = unicodedata.normalize("NFKD", heading.lower())
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = re.sub("[^a-z0-9]+", "-", " ".join(text.split()))
+    return re.sub("^[-0-9]+|-+$", "", text)
+
+
+def _headings(page):
+    return re.findall(r"^#{1,6} (.+)$", page.read_text(), re.MULTILINE)
 
 
 def _anchors(page):
-    headings = re.findall(r"^#{1,3} (.+)$", page.read_text(), re.MULTILINE)
-    return {_slug(heading) for heading in headings}
+    return {_html_id(heading) for heading in _headings(page)}
+
+
+def _published_pages():
+    return [
+        page
+        for page in DOCS.rglob("*.md")
+        if not {"superpowers", "_build", "examples"} & set(page.parts)
+    ]
+
+
+def test_html_id_matches_docutils():
+    nodes = pytest.importorskip("docutils.nodes")
+    for page in _published_pages():
+        for heading in _headings(page):
+            assert _html_id(heading) == nodes.make_id(heading), (page, heading)
+
+
+def test_the_anchor_is_the_html_id_not_the_myst_slug():
+    anchors = _anchors(DOCS / "howto" / "deploying.md")
+    assert "leave-cookie-domain-unset-unless-you-need-it" in anchors
+    assert "leave-cookie_domain-unset-unless-you-need-it" not in anchors
+
+
+def test_every_link_is_absolute():
+    assert LINK_TARGETS
+    for target in LINK_TARGETS:
+        assert target.startswith("https://"), target
+
+
+def test_no_link_points_at_the_internal_records():
+    for target in LINK_TARGETS:
+        assert "superpowers" not in target, target
 
 
 def test_the_readme_links_into_the_site():
@@ -38,7 +83,7 @@ def test_every_site_link_names_an_existing_page(link):
     if path in {"", "index.html"}:
         return
     page = DOCS / path.replace(".html", ".md")
-    assert page.is_file(), link
+    assert page in _published_pages(), link
     if anchor:
         assert anchor in _anchors(page), link
 

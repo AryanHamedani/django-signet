@@ -32,8 +32,9 @@ design flaw demands it, and every such change is listed here.
   JavaScript-readable auth cookies, a `__Host-` name on a path-scoped
   cookie, a missing grace cache, missing RSA keys, wrong-typed values, an
   unusable or limited token store, and auth URLs mounted outside the
-  refresh cookie's path. They do not inspect class-level configuration,
-  which is arbitrary Python.
+  refresh cookie's path. Apart from each mounted refresh-credential view's
+  `CookiePolicy` (signet.E008), they do not inspect class-level
+  configuration, which is arbitrary Python.
 
 ### Changed before release
 
@@ -59,7 +60,8 @@ design flaw demands it, and every such change is listed here.
   cannot silently roll back the revocation. A failure of the dispatch
   itself (Django's failure logging raises on a callable-instance receiver)
   is logged and ignored as well. A decision that should change the
-  outcome belongs in a hook such as `on_authentication_failed`.
+  outcome belongs in a hook such as `validate_claims` or
+  `RotationPolicy.get_user`.
 - **Security:** `RotationPolicy.on_reuse_detected` can no longer undo a
   reuse burn. The hook runs after the burn is written, but under
   `ATOMIC_REQUESTS` before it is committed, so a hook that raised rolled

@@ -104,7 +104,8 @@ refuse, is decided in one place, `RotationPolicy`. See
 ### One factory, `get_store()`
 
 Login, refresh and logout, the `Strict*` liveness check, password-change
-revocation, `signet_purge` and two system checks all need a store, and
+revocation, `signet_purge` and system checks `signet.E010` and
+`signet.W007` all need a store, and
 they must agree on which. Each once constructed its own, and one hardcoded
 `ORMTokenStore()`: under a cache store, a password change then revoked
 nothing, and a `Strict*` class read a different store from the one login
@@ -180,7 +181,9 @@ The same pattern runs below them. `Transport` declares `is_ambient` and
 `cookie_policy`, and the CSRF check reads `is_ambient` rather than a class
 name, so a new transport decides for itself whether CSRF applies. The one
 special case is `HybridTransport`, which can take either path: for it, the
-check asks whether this request's credential came from the cookie. `SigningBackend` has an HMAC and an RSA implementation behind one
-`sign` and `verify`.
+check asks whether this request's credential came from the cookie.
+
+`SigningBackend` has an HMAC and an RSA implementation behind one `sign`
+and `verify`.
 
 The public API, these hooks and ports included, is not frozen until 1.0.

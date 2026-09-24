@@ -47,11 +47,16 @@ For [`GRACE_WINDOW`](../reference/settings.md#grace_window) after each
 refresh, 10 seconds by default, the cache that
 [`GRACE_CACHE`](../reference/settings.md#grace_cache) names holds the
 access and refresh tokens the refresh minted, not a digest of them, so
-that a benign double refresh gets the same pair back. Anyone who can read
-that cache during the window can read a live pair. Inside the window, a
-replay of the spent token is also answered with that pair, not detected.
+that a benign double refresh gets the same pair back. Anyone who reads the
+entry gets a refresh token that stays valid until the session next
+refreshes. The entry's timeout is the window, but `DatabaseCache` and
+`FileBasedCache` keep expired entries until they are read or culled, so
+there a copy of the table or directory can hold live refresh tokens long
+after the window. Inside the window, a replay of the spent token is also
+answered with that pair, not detected.
 
-Limit who can read the cache. To turn the window off, set `GRACE_CACHE` to
+Use a cache that expires entries itself, such as Redis or Memcached, and
+limit who can read it. To turn the window off, set `GRACE_CACHE` to
 `None`: every replay of a spent token then burns its family, including two
 tabs refreshing at once. See [The grace window](security-model.md#the-grace-window).
 
@@ -83,17 +88,54 @@ cannot find every session of a user, and its `revoke_all_for_user()` raises
 If you need either, use `ORMTokenStore`, the default. See
 [Revoke every session of a user](../howto/choosing-a-store.md#revoke-every-session-of-a-user).
 
-### A lost spent-token marker fails open
+### Lost or late cache writes fail open
 
-`CacheTokenStore` records a spent refresh token as a cache key. If that key
-is evicted, or lost in a restart or a failover, while the token's own
-entry survives, the spent token redeems again as if it were current. A
-stolen token's replay is then not detected, and both copies keep
-refreshing. This holds in allowlist and denylist mode alike. Give the store
-a cache that never evicts and does not lose acknowledged writes; see
-[Survive eviction](../howto/choosing-a-store.md#survive-eviction).
+`CacheTokenStore` keeps its security decisions in cache keys, and a key
+that is lost, or written a moment too late, errs towards letting a token
+through:
+
+- **A spent-token marker that is evicted, or lost in a restart or a
+  failover**, while the token's own entry survives, lets the spent token
+  redeem again as if it were current. A stolen token's replay is then not
+  detected, and both copies keep refreshing. This holds in allowlist and
+  denylist mode alike.
+- **A revocation lost in a restart or a failover** brings the session's
+  entry back without its marker, so a logged-out or burned session
+  refreshes again.
+- **An evicted revocation marker, in denylist mode**, makes the `Strict*`
+  classes accept the revoked session's access tokens again.
+- **A revocation that lands while a refresh is claiming the token** can be
+  missed. `ORMTokenStore` rechecks revocation inside the `UPDATE` that
+  claims the token; `CacheTokenStore` can only reread the revocation
+  marker after its `add()` wins, which narrows the gap without closing it.
+
+Give the store a cache that never evicts and does not lose acknowledged
+writes, or use `ORMTokenStore`. See
+[Survive eviction](../howto/choosing-a-store.md#survive-eviction),
+[Survive a restart or a failover](../howto/choosing-a-store.md#survive-a-restart-or-a-failover)
+and
+[Fold revocation into the claim](../howto/choosing-a-store.md#fold-revocation-into-the-claim).
+
+### A failed `issue()` still spends the token
+
+A refresh consumes its token and records the successor in one database
+transaction, so under `ORMTokenStore` a failed `issue()` rolls the consume
+back. The cache is outside that transaction. Under `CacheTokenStore`, if
+writing the successor fails, on a dropped connection say, the refresh
+fails with the presented token already spent and no successor handed out.
+The client's retry is then treated as reuse, which burns the session
+(`RotationPolicy.rotate`).
 
 ## Browsers and cookies
+
+### `HybridTransport` cannot serve header clients
+
+`HybridTransport` reads the cookie first and falls back to the
+`Authorization` header, but it writes only cookies. A header client that
+refreshes through it spends its refresh token and receives the new pair
+only in `Set-Cookie`, which it never reads, so its session is lost. Give
+header clients a `HeaderTransport` realm; see
+[Do not use `HybridTransport` for these clients](../howto/header-clients.md#do-not-use-hybridtransport-for-these-clients).
 
 ### Cross-site frontends cannot use the cookie transport
 
@@ -149,7 +191,7 @@ Anything else written as Python on a class, such as
 assigned on one class, is not checked (`checks/__init__.py`). A clean check
 means the settings are coherent, not that every override is.
 
-### A callable-instance receiver can stop a signal's other receivers
+### A callable-instance receiver that raises stops a signal's other receivers
 
 Django's `Signal.send_robust()` names a failing receiver by its
 `__qualname__` when it logs the failure. A callable instance or a
