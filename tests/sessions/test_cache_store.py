@@ -344,3 +344,19 @@ def test_a_marker_for_a_family_the_cache_no_longer_holds_is_bounded_too(
 
     expected = timedelta(days=14) + timedelta(minutes=5)
     assert abs(timeouts[_REVOKED.format(family_id)] - expected.total_seconds()) <= 2
+
+
+def test_the_spent_token_marker_outlives_the_token(store, user, monkeypatch):
+    """The marker used the same rounded-down TTL as the token's entry, so
+    it could expire a fraction of a second before the token did - and in
+    that tail a spent token redeemed as LIVE."""
+    now = timezone.now()
+    monkeypatch.setattr("django_signet.sessions.stores.cache.timezone.now", lambda: now)
+    expires_at = now + timedelta(seconds=3600, milliseconds=500)
+    fam = store.open_family(user, expires_at)
+    store.issue(fam, "b" * 64, expires_at)
+    timeouts = _recorded_add_timeouts(store, monkeypatch)
+
+    assert store.consume("b" * 64).outcome is Outcome.LIVE
+
+    assert timeouts["signet:used:" + "b" * 64] > 3600.5

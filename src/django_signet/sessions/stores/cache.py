@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -114,6 +115,20 @@ class CacheTokenStore(TokenStore):
         # the misleading NOT_FOUND instead once the cache evicted it first.
         return max(60, int((expires_at - timezone.now()).total_seconds()))
 
+    @staticmethod
+    def _consumed_ttl(expires_at: datetime) -> int:
+        """The spent-token marker must outlive the token it marks.
+
+        ``_ttl`` rounds down, and the token's entry and its marker are
+        written at different moments, so either could expire first - and
+        in the fraction of a second between the marker expiring and the
+        token's own ``expires_at``, a spent token would redeem as LIVE.
+        Rounded up, plus a second, the marker always lasts past
+        ``expires_at``, after which ``consume()`` answers EXPIRED anyway.
+        """
+        remaining = (expires_at - timezone.now()).total_seconds()
+        return max(60, math.ceil(remaining) + 1)
+
     def _revocation_ttl(self, family: _CachedFamily | None) -> int:
         """How long a revocation marker must outlive the revocation.
 
@@ -186,7 +201,7 @@ class CacheTokenStore(TokenStore):
         # ever win it, and the outcome below is decided by that return
         # value alone.
         won = self.cache.add(
-            _CONSUMED.format(digest), True, self._ttl(token.expires_at)
+            _CONSUMED.format(digest), True, self._consumed_ttl(token.expires_at)
         )
         if not won:
             return ConsumeResult(Outcome.ALREADY_CONSUMED, family, token)
