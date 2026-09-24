@@ -17,7 +17,7 @@ and the console session in step 8 run under Node against a live server.
 ```{note}
 The public API is not frozen until 1.0. Until then a minor release may
 rename a hook or change its signature; every such change is listed in the
-[changelog](https://github.com/AryanHamedani/django-signet/blob/main/CHANGELOG.md).
+[changelog](../changelog.md).
 ```
 
 ## Step 1: Install the package

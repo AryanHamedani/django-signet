@@ -26,8 +26,8 @@ from tests.docs.helpers import wire_header
 
 CREDENTIALS = {"username": "alice", "password": "pw-not-used-in-assertions"}
 POLICY = CookiePolicy()
-STRICT = {"GRACE_CACHE": None}
-_real_time = time.time  # no grace window: every replay is reuse
+STRICT = {"GRACE_CACHE": None}  # no grace window: every replay is reuse
+_real_time = time.time
 
 
 @pytest.fixture(autouse=True)

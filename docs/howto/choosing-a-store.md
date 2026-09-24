@@ -61,7 +61,9 @@ or was lost in a flush. An allowlist refuses its access tokens at the
 `Strict*` classes; a denylist accepts them until they expire, unless it
 holds a revocation marker for the session. Refresh fails in both modes.
 Choose the denylist only if a cache flush must not end every `Strict*`
-session at once, and accept that it trusts what it has forgotten.
+session at once - it buys at most one access-token lifetime, since refresh
+fails after a flush either way - and accept that it trusts what it has
+forgotten.
 
 To write a store of your own, subclass `TokenStore`; see
 {doc}`../reference/sessions`. The port is public API, but the API is not
@@ -150,8 +152,12 @@ RDB snapshot comes back without the writes made since the snapshot, and a
 failover to an asynchronous replica drops the writes the replica had not
 received. If a spent-token marker is lost while the token's own entry
 survives, from an earlier write, the spent token redeems again: the same
-failure as eviction. Use AOF persistence (`appendfsync always` loses
-nothing), and treat a failover as a gap in reuse detection.
+failure as eviction. A revocation made since the snapshot is lost the
+same way: the session's entry comes back without its marker, and a
+logged-out or burned session refreshes again. Use AOF persistence
+(`appendfsync always` loses nothing), and treat a failover as a gap in
+both reuse detection and revocation. Clearing the store's keys afterwards
+closes both gaps, at the cost of ending every session.
 
 ## Other cache-store caveats
 

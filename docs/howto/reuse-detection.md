@@ -75,8 +75,7 @@ and ignored. The family stays revoked and the replay is refused as usual.
 That holds under `ATOMIC_REQUESTS` too, including for a database query in
 the hook that fails. Inside a transaction the hook runs under a savepoint
 of its own, as signal receivers do, so a failed query rolls back only the
-hook's work, never the revocation. (Under the ORM store even the example's
-`family.user` is a query.)
+hook's work, never the revocation.
 
 ## Or alert from the signal
 

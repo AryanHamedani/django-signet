@@ -33,6 +33,9 @@ class StaffRotationPolicy(RotationPolicy):
 class StaffRealm(SignetViewMixin):
     transport = STAFF_COOKIES
     rotation = StaffRotationPolicy()
+    # serializer_class = YourSecondFactorSerializer  # the stricter login
+    # this binding protects; without one, any user who logs in here is
+    # stamped as staff, so pair it with a permission class too.
 
     def get_claims(self, user):
         # Login and every refresh at this realm stamp its tokens, for

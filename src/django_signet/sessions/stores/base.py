@@ -185,9 +185,9 @@ class TokenStore(abc.ABC):
         issued). An allowlist store gets that for free - an unknown family
         is already not live, so ``ORMTokenStore`` does nothing for one. A
         denylist store treats an unknown family as live, so it must record
-        the revocation anyway (``CacheTokenStore`` writes a marker with no
-        timeout); one that skipped it would fail open, and ``Strict*``
-        would keep accepting the revoked session.
+        the revocation anyway (``CacheTokenStore`` writes a marker that
+        outlives every token of the family); one that skipped it would fail
+        open, and ``Strict*`` would keep accepting the revoked session.
 
         The first revocation of a family wins: a later call must not
         overwrite the recorded ``reason``.
