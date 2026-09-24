@@ -6,7 +6,8 @@ Thank you for considering a contribution.
 
 This is a security library. Two consequences follow:
 
-1. **Never open a public issue for a vulnerability.** See [SECURITY.md](SECURITY.md).
+1. **Never open a public issue for a vulnerability.** See the
+   [security policy](https://github.com/AryanHamedani/django-signet/security/policy).
 2. **Every change to authentication, token handling, or cookies needs a test
    that fails without it.** "It works locally" is not evidence.
 
@@ -22,7 +23,7 @@ python -m venv .venv
 ## Before you open a pull request
 
 ```bash
-nox            # lint, typecheck, architecture, and the full matrix
+nox            # lint, typecheck, architecture, the full test matrix, and docs
 ```
 
 Or individually:
@@ -30,9 +31,12 @@ Or individually:
 ```bash
 nox -s lint typecheck architecture
 nox -s tests
+nox -s docs
 ```
 
-All four must pass. CI runs the same sessions.
+All five must pass. CI runs the same sessions. The `docs` session builds
+the documentation with warnings treated as errors, so a broken link or
+cross-reference fails it.
 
 ## Architecture rules
 
@@ -42,8 +46,9 @@ Module boundaries are enforced by `import-linter` contracts in
 - `tokens` is a leaf: it knows nothing about storage, the wire, or DRF.
 - `transport` moves bytes: it knows nothing about storage or authentication.
 - `sessions` persists and rotates: it never touches the wire.
-- `conf`, `exceptions`, `hashing`, `signals` and `users` depend on nothing above
-  them.
+- `conf`, `exceptions`, `hashing`, `isolation`, `signals` and `users` depend on
+  nothing above them.
+- Only `sessions.stores.factory` imports a concrete token store.
 
 If your change needs to cross a boundary, that is a design discussion — open
 an issue before writing the code.

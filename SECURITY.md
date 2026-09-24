@@ -41,5 +41,7 @@ to your rate limiter.
 - Refresh tokens are persisted only as SHA-256 digests.
 - `jwt.decode` is always called with an explicit single-element `algorithms`
   list; the token's own `alg` header is never trusted.
-- Every authentication failure returns one generic 401 to avoid oracles.
-- The adversarial suite in `tests/security/` gates every release.
+- Every authentication failure returns the same generic message, whatever
+  its cause, to avoid oracles. A failed CSRF check answers 403 with it;
+  every other failure answers 401.
+- The adversarial suite in `tests/security/` runs as its own CI job.
