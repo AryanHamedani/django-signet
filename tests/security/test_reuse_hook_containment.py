@@ -45,6 +45,19 @@ class _PagingPolicy(RotationPolicy):
         raise _AlertingOutageError("the pager is down")
 
 
+class _AuditingPolicy(RotationPolicy):
+    """An audit-log hook whose write fails: the username is taken. Django
+    marks the enclosing transaction for rollback before raising, so
+    catching the exception is not enough on its own."""
+
+    grace_cache = None
+
+    def on_reuse_detected(self, family):
+        from django.contrib.auth import get_user_model
+
+        get_user_model().objects.create(username="bob")
+
+
 class _PagingRealm(SignetViewMixin):
     rotation = _PagingPolicy()
 
@@ -130,3 +143,22 @@ def test_a_raising_reuse_hook_still_refuses_the_replay(account):
 
     first.family.refresh_from_db()
     assert first.family.revoked_reason == RevocationReason.REUSE_DETECTED
+
+
+@pytest.mark.urls(__name__)
+@pytest.mark.usefixtures("atomic_requests")
+def test_a_hook_whose_database_write_fails_does_not_roll_back_the_burn(
+    account, monkeypatch
+):
+    """Catching the hook's exception was not enough: its failed write had
+    already marked the request's transaction for rollback, so the replay
+    answered 401 while the burn was silently undone. The hook now runs
+    under its own savepoint."""
+    monkeypatch.setattr(_PagingRealm, "rotation", _AuditingPolicy())
+    spent, csrf_value = _spent_token()
+
+    response = _post("refresh", spent, csrf_value)
+
+    family = TokenFamily.objects.get()
+    assert family.revoked_reason == RevocationReason.REUSE_DETECTED
+    assert response.status_code == 401
