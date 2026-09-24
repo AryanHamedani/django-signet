@@ -131,3 +131,7 @@ design flaw demands it, and every such change is listed here.
   must never back the store.
 - Refresh loads the user once, not twice. `SessionPair` gains an optional
   `user`, which `token_refreshed` now receives without a second query.
+- `CacheTokenStore`'s spent-token marker now outlives the token it marks.
+  It used the same rounded-down TTL as the token's own cache entry, so it
+  could expire a fraction of a second first, and in that tail a spent
+  token redeemed as LIVE. It is now rounded up, plus a second.
