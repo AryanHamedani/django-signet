@@ -247,7 +247,9 @@ class TokenRefreshView(RefreshCredentialView):
         send(
             token_refreshed,
             sender=type(self),
-            user=getattr(pair.family, "user", None),
+            # rotate() already loaded the user; family.user would load it
+            # again. A grace-window replay carries none, so fall back.
+            user=pair.user or getattr(pair.family, "user", None),
             family=pair.family,
             request=request,
         )

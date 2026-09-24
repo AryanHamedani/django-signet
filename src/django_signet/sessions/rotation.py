@@ -76,13 +76,16 @@ class SessionPair:
     ``open_family``/``consume`` - a real ``TokenFamily`` for the default
     ORM store, or a structurally-compatible stand-in for another adapter.
     ``replayed`` is ``True`` only when this pair was served from the grace
-    cache rather than freshly minted.
+    cache rather than freshly minted. ``user`` is the user the pair was
+    minted for, when the caller already loaded it (a fresh rotation);
+    ``None`` otherwise, and then ``family.user`` is the way to it.
     """
 
     access: MintedToken
     refresh: MintedToken
     family: Any
     replayed: bool = False
+    user: Any = None
 
 
 class RotationPolicy:
@@ -194,7 +197,9 @@ class RotationPolicy:
         replayed = self._settle(result, digest)
         if replayed is not None:
             return replayed
-        pair = SessionPair(access=access, refresh=refresh, family=result.family)
+        pair = SessionPair(
+            access=access, refresh=refresh, family=result.family, user=user
+        )
         self._grace_put(digest, pair)
         return pair
 

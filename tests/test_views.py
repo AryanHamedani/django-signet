@@ -1,4 +1,6 @@
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from rest_framework.test import APIClient, APIRequestFactory
 
@@ -386,3 +388,21 @@ def test_header_transport_on_a_plain_login_view_works(account):
     assert response.status_code == 200
     assert {"access", "refresh"} <= set(response.data)
     assert not response.cookies
+
+
+def test_refresh_loads_the_user_once(client, account):
+    """``rotate()`` loads the user to check it; the view used to load it a
+    second time through ``family.user`` for ``token_refreshed``."""
+    _login(client)
+    csrf_token = client.cookies[POLICY.csrf_name].value
+    with CaptureQueriesContext(connection) as queries:
+        response = client.post(
+            reverse("django_signet:refresh"), **{CSRF_HEADER: csrf_token}
+        )
+    assert response.status_code == 200
+    user_selects = [
+        q["sql"]
+        for q in queries
+        if q["sql"].startswith("SELECT") and "auth_user" in q["sql"].split("FROM")[1]
+    ]
+    assert len(user_selects) == 1
