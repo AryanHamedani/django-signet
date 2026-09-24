@@ -218,7 +218,9 @@ class CacheTokenStore(TokenStore):
         )
 
     def purge_expired(self) -> int:
-        # Nothing to do: every key this store writes carries its own TTL,
-        # so expired entries are already gone from the cache by the time
-        # anything could purge them.
+        # Nothing to do. Family and token entries carry their own TTL, so
+        # expired ones are already gone from the cache by the time anything
+        # could purge them. Revocation markers are the exception - written
+        # with no timeout (see revoke_family) - and must not be purged:
+        # a denylist that dropped one would revive the family it records.
         return 0

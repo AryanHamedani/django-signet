@@ -8,6 +8,13 @@ from django.utils import timezone
 
 from django_signet.exceptions import TokenInvalid, TokenRevoked
 
+# Claims only the library may set, because only the library checks them:
+# ``aud`` and ``iss`` are verified against the AUDIENCE and ISSUER
+# settings. An ``aud`` from ``extra`` with AUDIENCE unset made every token
+# fail verification (PyJWT refuses an ``aud`` it was not told to expect),
+# and an ``iss`` was signed as given and never checked.
+_SETTINGS_BOUND = frozenset({"aud", "iss"})
+
 
 def build_claims(
     *,
@@ -29,11 +36,11 @@ def build_claims(
     caller cannot overwrite ``sub`` or ``exp`` through a custom
     ``get_claims`` hook.
 
-    ``family_id``, ``audience`` and ``issuer`` are the exception: when one is
-    ``None`` it is simply absent from ``reserved``, so an ``extra`` key of
-    the same name survives untouched. That's intentional - those three are
-    optional claims the library itself is declining to set, not reserved
-    claims it is trying to protect.
+    ``aud`` and ``iss`` are dropped from ``extra`` even when ``audience`` or
+    ``issuer`` is ``None``: they are verified against the ``AUDIENCE`` and
+    ``ISSUER`` settings, so a value the settings do not name either breaks
+    verification or is never checked. ``family_id`` is the one exception:
+    when it is ``None``, an ``extra`` ``sid`` survives untouched.
     """
     now = timezone.now()
     expires_at = now + lifetime
@@ -52,7 +59,8 @@ def build_claims(
     if issuer is not None:
         reserved["iss"] = issuer
 
-    claims: dict[str, Any] = {**(extra or {}), **reserved}
+    custom = {k: v for k, v in (extra or {}).items() if k not in _SETTINGS_BOUND}
+    claims: dict[str, Any] = {**custom, **reserved}
     return claims, expires_at
 
 
