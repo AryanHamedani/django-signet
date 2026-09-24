@@ -197,6 +197,7 @@ source_modules = [
     "django_signet.conf",
     "django_signet.exceptions",
     "django_signet.hashing",
+    "django_signet.isolation",
     "django_signet.signals",
     "django_signet.users",
 ]

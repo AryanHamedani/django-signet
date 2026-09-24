@@ -23,12 +23,12 @@ rolled back.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from typing import Any
 
 import django.dispatch
-from django.db import transaction
+
+from django_signet.isolation import savepoint_if_in_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -75,13 +75,8 @@ def send(signal: django.dispatch.Signal, sender: Any, **named: Any) -> None:
     raises can change what the sender does next.
     """
     name = _NAMES.get(signal, repr(signal))
-    isolation = (
-        transaction.atomic()
-        if transaction.get_connection().in_atomic_block
-        else contextlib.nullcontext()
-    )
     try:
-        with isolation:
+        with savepoint_if_in_transaction():
             responses = signal.send_robust(sender=sender, **named)
     except Exception:
         logger.exception(
