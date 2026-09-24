@@ -103,3 +103,20 @@ design flaw demands it, and every such change is listed here.
   a cookie.
 - `django_signet.checks` is now a package (`settings`, `cookies`, `urls`).
   Every check is still importable from `django_signet.checks`.
+- **Security:** a refresh that fails part-way can no longer spend its
+  token. `rotate()` consumed the refresh token and only then signed and
+  issued the successor, so a signing failure (a verify-only deployment
+  sharing the store) or a failed `issue()` left the token spent with no
+  successor handed out - and the client's retry was burned as reuse. The
+  successor is now signed before the consume, and the consume and the
+  issue share one transaction. (A store outside the database, such as
+  `CacheTokenStore`, gets the signing half.)
+- **Security:** `on_reuse_detected` now runs under its own savepoint, like
+  a signal receiver. Catching its exception was not enough: a database
+  write in the hook that failed had already marked the request's
+  transaction for rollback under `ATOMIC_REQUESTS`, so the burn was
+  silently undone while the replay still answered 401.
+- `aud` and `iss` returned from `get_claims` are now dropped. They are
+  verified against the `AUDIENCE` and `ISSUER` settings: an `aud` with
+  `AUDIENCE` unset made every token fail verification, and an `iss` was
+  signed and never checked.

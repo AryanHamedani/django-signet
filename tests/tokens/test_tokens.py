@@ -114,3 +114,22 @@ def test_a_correctly_signed_token_missing_only_jti_is_rejected():
     )
     with pytest.raises(TokenInvalid):
         AccessToken().verify(raw)
+
+
+@pytest.mark.parametrize("claim", ["aud", "iss"])
+def test_settings_bound_claims_from_extra_are_dropped_when_unset(claim):
+    """``aud`` and ``iss`` are checked against AUDIENCE and ISSUER. With
+    those unset, an ``aud`` from ``get_claims`` made every token fail
+    verification, and an ``iss`` was signed and never checked. Both are
+    now dropped; other custom claims survive."""
+    minted = AccessToken().mint(subject="42", extra={claim: "forged", "org": 7})
+    claims = AccessToken().verify(minted.value)
+    assert claim not in claims
+    assert claims["org"] == 7
+
+
+def test_settings_bound_claims_from_extra_cannot_override_the_settings(settings):
+    settings.SIGNET = {"AUDIENCE": "api", "ISSUER": "signet"}
+    minted = AccessToken().mint(subject="42", extra={"aud": "other", "iss": "evil"})
+    claims = AccessToken().verify(minted.value)
+    assert (claims["aud"], claims["iss"]) == ("api", "signet")
