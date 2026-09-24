@@ -52,6 +52,7 @@ from django_signet.exceptions import (
     TokenRevoked,
 )
 from django_signet.hashing import token_digest
+from django_signet.isolation import savepoint_if_in_transaction
 from django_signet.models import RevocationReason
 from django_signet.sessions.stores.base import ConsumeResult, Outcome
 from django_signet.sessions.stores.factory import ConfiguredStore
@@ -161,13 +162,41 @@ class RotationPolicy:
         *before* the token is consumed: a hook that raises (a transient
         database error) must leave the token redeemable, or the client's
         retry would be indistinguishable from theft.
+
+        For the same reason the successor pair is *signed* before the token
+        is consumed, and the consume and the successor's ``issue()`` share
+        one transaction. A signing failure (a verify-only deployment with
+        no ``SIGNING_KEY``) or a failed ``issue()`` therefore leaves the
+        token unspent, where it used to be consumed with no successor ever
+        handed out - so the client's retry was burned as reuse. (A store
+        outside the database, such as ``CacheTokenStore``, is not covered
+        by the transaction; the signing half still is.)
         """
         claims = self.refresh_token_class().verify(raw_refresh)
         user = self._active_user(claims)
         extra = get_claims(user) if get_claims is not None else None
+        access, refresh = self._sign_pair(
+            str(session_id(claims)), subject=str(user.pk), extra=extra
+        )
         digest = token_digest(raw_refresh)
-        result = self.store.consume(digest)
-        return self._handle_consume_result(result, digest, user=user, extra=extra)
+        with transaction.atomic():
+            result = self.store.consume(digest)
+            if result.outcome is Outcome.LIVE:
+                if result.family is None:
+                    # A store breaking its own contract; refusing inside
+                    # the transaction leaves the token unspent.
+                    raise TokenInvalid("the store redeemed a token with no family")
+                self.store.issue(
+                    result.family, token_digest(refresh.value), refresh.expires_at
+                )
+        # Every other outcome is settled after the transaction, as in
+        # _redeem, so a reuse burn is never rolled back with it.
+        replayed = self._settle(result, digest)
+        if replayed is not None:
+            return replayed
+        pair = SessionPair(access=access, refresh=refresh, family=result.family)
+        self._grace_put(digest, pair)
+        return pair
 
     def get_user(self, claims: dict[str, Any]) -> Any:
         """Hook: resolve a verified refresh token's subject to a user who
@@ -306,22 +335,6 @@ class RotationPolicy:
             return self._handle_replay(digest, result.family)
         return None
 
-    def _handle_consume_result(
-        self,
-        result: ConsumeResult,
-        digest: str,
-        *,
-        user: Any,
-        extra: dict[str, Any] | None,
-    ) -> SessionPair:
-        replayed = self._settle(result, digest)
-        if replayed is not None:
-            return replayed
-
-        pair = self._mint_into(result.family, subject=str(user.pk), extra=extra)
-        self._grace_put(digest, pair)
-        return pair
-
     def _handle_replay(self, digest: str, family: Any) -> SessionPair:
         """A second redemption of an already-consumed token: the benign
         double-tab case inside the grace window, or theft outside it."""
@@ -331,23 +344,28 @@ class RotationPolicy:
         self._burn(family)
         raise TokenReused("refresh token replayed outside the grace window")
 
-    def _mint_into(
-        self, family: Any, *, subject: str, extra: dict[str, Any] | None
-    ) -> SessionPair:
-        family_id = str(family.id)
+    def _sign_pair(
+        self, family_id: str, *, subject: str, extra: dict[str, Any] | None
+    ) -> tuple[MintedToken, MintedToken]:
+        """Sign an access and a refresh token for ``family_id``. Pure
+        signing - it touches no store - so it can run, and fail, before
+        anything is written."""
+        access = self.access_token_class().mint(
+            subject, family_id=family_id, extra=extra
+        )
         refresh = self.refresh_token_class().mint(
             subject, family_id=family_id, extra=extra
         )
-        # Issuing the successor and minting the access token as one unit:
-        # if the access mint fails (e.g. a misconfigured signing backend),
-        # the just-persisted IssuedToken row must not survive as an orphan
-        # nobody will ever present, since the raw refresh value that would
-        # redeem it was never returned to any caller.
-        with transaction.atomic():
-            self.store.issue(family, token_digest(refresh.value), refresh.expires_at)
-            access = self.access_token_class().mint(
-                subject, family_id=family_id, extra=extra
-            )
+        return access, refresh
+
+    def _mint_into(
+        self, family: Any, *, subject: str, extra: dict[str, Any] | None
+    ) -> SessionPair:
+        # Both tokens are signed before the successor is issued, so a
+        # signing failure (e.g. a misconfigured backend) leaves no
+        # IssuedToken row behind that nobody will ever present.
+        access, refresh = self._sign_pair(str(family.id), subject=subject, extra=extra)
+        self.store.issue(family, token_digest(refresh.value), refresh.expires_at)
         return SessionPair(access=access, refresh=refresh, family=family)
 
     def _burn(self, family: Any) -> None:
@@ -366,10 +384,13 @@ class RotationPolicy:
         # committed: under ATOMIC_REQUESTS, or in a transaction the caller
         # opened, an exception escaping here would roll the burn back and
         # leave a detected theft's family live. So, like a signal
-        # receiver's, the hook's exceptions are logged and the replay is
-        # refused with TokenReused all the same.
+        # receiver's, the hook runs under its own savepoint - a database
+        # write it makes that fails rolls back only the hook's writes -
+        # and its exceptions are logged and the replay is refused with
+        # TokenReused all the same.
         try:
-            self.on_reuse_detected(family)
+            with savepoint_if_in_transaction():
+                self.on_reuse_detected(family)
         except Exception:
             logger.exception(
                 "signet: %s.on_reuse_detected raised; the exception was "
