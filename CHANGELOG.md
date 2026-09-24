@@ -135,3 +135,12 @@ design flaw demands it, and every such change is listed here.
   It used the same rounded-down TTL as the token's own cache entry, so it
   could expire a fraction of a second first, and in that tail a spent
   token redeemed as LIVE. It is now rounded up, plus a second.
+- New system check `signet.W013` warns when `GRACE_CACHE` names a
+  `DatabaseCache` or `FileBasedCache`. A grace entry holds a raw refresh
+  token that stays valid until the session next refreshes, and these
+  backends keep an expired entry until it is read or culled, so a copy of
+  the table or directory can hold live refresh tokens long after the
+  window.
+- New system check `signet.W014` warns when the token store is backed by
+  a `FileBasedCache`, whose `add()` checks and then writes, so reuse
+  detection can miss a concurrent replay.
