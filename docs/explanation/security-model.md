@@ -28,13 +28,16 @@ It is built against these attackers:
   [Double-submit CSRF](#double-submit-csrf).
 - **Someone who copies a refresh token**, from a log, a proxy or a device.
   Every refresh spends the token it presents, and a spent token presented
-  again, after a short grace window, revokes the whole session. See [Reuse detection](#reuse-detection).
-- **Someone who reads your database.** Refresh tokens are stored only as
-  SHA-256 digests. Access tokens are not stored at all. See
-  [Digest-only storage](#digest-only-storage).
+  again, after a short grace window, revokes the whole session. See
+  [Reuse detection](#reuse-detection).
+- **Someone who reads your database.** Refresh tokens reach the token
+  store only as SHA-256 digests; the grace cache is the one exception
+  (below). See [Digest-only storage](#digest-only-storage).
 - **A hostile host under your domain.** The cookie names carry the
   `__Host-` and `__Secure-` prefixes, which browsers enforce. See
-  [Cookie prefixes](#cookie-prefixes).
+  [Cookie prefixes](#cookie-prefixes), and for what the `__Secure-`
+  refresh cookie still allows,
+  [A sibling host can plant a refresh cookie](limitations.md#a-sibling-host-can-plant-a-refresh-cookie).
 
 Two properties hold throughout. Verification passes exactly one algorithm
 to PyJWT, so a token's own `alg` header is never trusted
@@ -87,7 +90,7 @@ Before a refresh consumes anything, `RotationPolicy.rotate`:
    request never reaches the store;
 2. loads the user from the token's `sub` claim and refuses an inactive
    one, which also revokes the family, so reactivating the account does
-   not revive the session (`users.py`);
+   not revive the session (`RotationPolicy._active_user`);
 3. calls `get_claims`, and signs the successor pair.
 
 Only then is the token consumed. A failure in step 3, a database error in
@@ -102,7 +105,7 @@ Each store makes the decision in a single atomic step:
 - `ORMTokenStore` runs one conditional
   `UPDATE ... WHERE consumed_at IS NULL`, which also requires the family to
   be unrevoked. The database decides which of two racing requests wins,
-  without row locks (`sessions/stores/orm.py`).
+  without `SELECT ... FOR UPDATE` (`sessions/stores/orm.py`).
 - `CacheTokenStore` calls `cache.add()`, which sets a key only if it is
   absent, and decides from whether its own call won
   (`sessions/stores/cache.py`). This needs a backend whose `add()` is
@@ -158,8 +161,13 @@ This has two costs, which you should weigh:
 - **The grace cache is the only place a raw token sits outside the
   client.** The store sees digests only, but a replay has to receive the
   exact bytes the first caller received, so the entry holds the rendered
-  access and refresh tokens. Anyone who can read that cache during the
-  window can read a live pair.
+  access and refresh tokens. Anyone who reads the entry gets a refresh
+  token that stays valid until the session next refreshes. The entry's
+  timeout is the window, but `DatabaseCache` and `FileBasedCache` keep
+  expired entries until they are read or culled, so there a copy of the
+  table or directory can hold live refresh tokens long after the window.
+  Use a cache that expires entries itself, such as Redis or Memcached, or
+  set `GRACE_CACHE` to `None`.
 - **Inside the window, a replay is indistinguishable from a retry.** A
   thief who presents a token within the window after its owner refreshed
   receives the same pair, and nothing is detected.
@@ -247,8 +255,9 @@ on every API call, and that path rules out `__Host-`. Setting
 [`COOKIE_DOMAIN`](../reference/settings.md#cookie_domain) turns every name
 into `__Secure-`, and `COOKIE_SECURE = False` drops the prefixes
 altogether. The CSRF cookie is prefixed too: an unprefixed double-submit
-cookie could be overwritten by a sibling host, which would defeat the
-check. System check
+cookie could be overwritten by a sibling host, leaving only the CORS
+preflight to stop a forged request; see
+[Why the CSRF header matters more here](../howto/spa.md#why-the-csrf-header-matters-more-here). System check
 [`signet.E002`](../reference/checks.md#signete002---an-explicit-cookie-name-breaks-its-prefixs-rules)
 reports an explicit cookie name that breaks its prefix's rules.
 
@@ -256,14 +265,17 @@ reports an explicit cookie name that breaks its prefix's rules.
 
 The token store never receives a raw refresh token. `issue()` and
 `consume()` take its SHA-256 hex digest (`hashing.py`), and no store method
-takes the token itself (`sessions/stores/base.py`). `IssuedToken.digest` is the only column
-that identifies a token (`sessions/models.py`). The store only ever needs
-to answer "is this the token I issued?", so a one-way digest is enough, and
-there is no key to leak or rotate. A copy of the database yields no
-refresh token that can be presented.
+takes the token itself (`sessions/stores/base.py`). `IssuedToken.digest`
+is the only column that identifies a token (`sessions/models.py`). The
+store only ever needs to answer "is this the token I issued?", so a one-way
+digest is enough, and there is no key to leak or rotate. A copy of the
+database yields no refresh token that can be presented, unless
+`GRACE_CACHE` is a `DatabaseCache` in that database; see
+[The grace window](#the-grace-window).
 
-Access tokens are not stored anywhere. They are verified by signature, and
-the `Strict*` classes look up only their family (`authentication.py`).
+The token store never stores access tokens. They are verified by
+signature, and the `Strict*` classes look up only their family
+(`authentication.py`).
 
 ## Signals and hooks cannot change an outcome
 

@@ -38,10 +38,12 @@ to your rate limiter.
 
 ## Design notes for reviewers
 
-- Refresh tokens are persisted only as SHA-256 digests.
+- Refresh tokens reach the token store only as SHA-256 digests. The grace
+  cache is the one exception: it holds the raw pair a refresh minted, so
+  that a retry gets the same pair back.
 - `jwt.decode` is always called with an explicit single-element `algorithms`
   list; the token's own `alg` header is never trusted.
 - Every authentication failure returns the same generic message, whatever
-  its cause, to avoid oracles. A failed CSRF check answers 403 with it;
-  every other failure answers 401.
+  its cause, to avoid oracles. A failed login answers 400 with it, a failed
+  CSRF check 403, and any other rejected credential 401.
 - The adversarial suite in `tests/security/` runs as its own CI job.

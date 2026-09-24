@@ -102,8 +102,13 @@ another worker process handles finds nothing. It is then treated as theft,
 and the session is revoked. With more than one process, point `GRACE_CACHE`
 at a cache they all share.
 
-The entry holds the raw token pair for the length of the window, so limit
-who can read that cache.
+The entry holds the raw token pair, and anyone who reads it gets a refresh
+token that stays valid until the session next refreshes. The entry's
+timeout is the window, but `DatabaseCache` and `FileBasedCache` keep
+expired entries until they are read or culled, so there a copy of the
+table or directory can hold live refresh tokens long after the window.
+Use a cache that expires entries itself, such as Redis or Memcached, or set
+`GRACE_CACHE` to `None`, and limit who can read it.
 
 ## Purge expired sessions
 

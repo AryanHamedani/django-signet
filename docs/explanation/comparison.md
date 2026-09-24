@@ -17,7 +17,7 @@ other, see {doc}`../howto/migrating-from-simplejwt`.
 | Replay of a spent refresh token | a token blacklisted after rotation is refused as "Token is blacklisted"; nothing else is revoked (`tokens.py`, `BlacklistMixin`) | after a short grace window, revokes the whole session and fires `token_reuse_detected`, per RFC 9700 (see [Reuse detection](security-model.md#reuse-detection)) |
 | Revoking access tokens | `AccessToken` is never checked against the blacklist (`tokens.py`). With `CHECK_REVOKE_TOKEN`, off by default, tokens minted before a password change are refused (`authentication.py`). | the `Strict*` authentication classes refuse an access token as soon as its session is revoked, for any reason |
 | Logout | `TokenBlacklistView`, which needs the blacklist app; without the app it answers 200 to a valid token and revokes nothing (`serializers.py`, `TokenBlacklistSerializer`) | logout and logout-all are among the five endpoints |
-| Refresh tokens at rest | nothing is stored without the blacklist app. With it, `OutstandingToken.token` holds each refresh token as the raw string, in a `TextField` (`token_blacklist/models.py`). | a SHA-256 digest only |
+| Refresh tokens at rest | nothing is stored without the blacklist app. With it, `OutstandingToken.token` holds each refresh token as the raw string, in a `TextField` (`token_blacklist/models.py`). | a SHA-256 digest in the token store; the grace cache is the one exception (see [The grace window](security-model.md#the-grace-window)) |
 | Allowlist or denylist | denylist only, the blacklist app | one `TokenStore` port, in either mode |
 | Storage | the database, through the blacklist app | the database or a Django cache, chosen by `SIGNET["STORE"]` |
 | Loading the user | `JWTAuthentication` loads it on every request; `JWTStatelessUserAuthentication` builds a user from the claims with no query (`authentication.py`) | every authentication class loads it on every request |
@@ -32,7 +32,8 @@ other, see {doc}`../howto/migrating-from-simplejwt`.
 
 Both refuse an inactive user at login and at refresh by default:
 Simple JWT through `USER_AUTHENTICATION_RULE` (`serializers.py`), Signet
-through `RotationPolicy.get_user`.
+through `TokenObtainSerializer` at login and `RotationPolicy.get_user` at
+refresh.
 
 ## What Simple JWT does well
 

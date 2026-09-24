@@ -25,7 +25,8 @@ Every signal is sent through `django_signet.signals.send`, never
 - Return values are discarded.
 
 A decision that *should* change the outcome belongs in a hook such as
-`BaseJWTAuthentication.on_authentication_failed`, not a receiver.
+`BaseJWTAuthentication.validate_claims` or `RotationPolicy.get_user`, not
+a receiver.
 `RotationPolicy.on_reuse_detected` is contained like a receiver: its
 exceptions are logged and ignored, because it runs after a reuse burn
 that an escaping exception could roll back (under `ATOMIC_REQUESTS`).
