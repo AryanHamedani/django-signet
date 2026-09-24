@@ -18,10 +18,12 @@ Signet does not read `SIMPLE_JWT`. Copy each setting you rely on into
 | `ALGORITHM`, `SIGNING_KEY`, `VERIFYING_KEY`, `AUDIENCE`, `ISSUER`, `LEEWAY` | the same names in `SIGNET`. Only `HS256`/`HS384`/`HS512` and `RS256`/`RS384`/`RS512` are supported, and `LEEWAY` is a `timedelta`. See {doc}`rs256`. |
 | `AUTH_HEADER_TYPES` (`("Bearer",)`), `AUTH_HEADER_NAME` | `HeaderTransport(header="HTTP_AUTHORIZATION", keyword="Bearer")`: one keyword per transport |
 | `USER_ID_FIELD`, `USER_ID_CLAIM` (`"id"`, `"user_id"`) | none: `sub` always holds the user's primary key, as a string |
-| `TOKEN_OBTAIN_SERIALIZER` | `serializer_class` on a realm, which login uses |
+| `TOKEN_OBTAIN_SERIALIZER` | `serializer_class` on a realm, which login uses. Its `validate()` must return `{"user": user}`, so a Simple JWT obtain serializer cannot be reused as it is. |
 | extra claims from `get_token()` on the obtain serializer | `get_claims()` on a realm; see {doc}`custom-claims` |
 | `USER_AUTHENTICATION_RULE`, applied at login and at refresh | at login, the login serializer's `validate()`; at refresh, `RotationPolicy.get_user()`. Both refuse an inactive user by default. |
 | `CHECK_USER_IS_ACTIVE` (`True`) | always on: the authentication classes refuse an inactive user on every request |
+| `CHECK_REVOKE_TOKEN` (`False`) | a password change revokes every session under `ORMTokenStore`, so refresh stops at once. Access tokens already issued stay valid until they expire, unless the view uses a `Strict*` class. With `CHECK_REVOKE_TOKEN` on, Simple JWT refused them as soon as the password changed. |
+| `UPDATE_LAST_LOGIN` (`False`) | none: Signet never writes `last_login`. Update it from a `token_issued` receiver; see below. |
 
 ### Sessions no longer slide
 
@@ -52,6 +54,31 @@ class reads its `Authorization` header. Only absence is passed on. A
 request whose Signet cookie fails is refused, with 401, or 403 for a failed
 CSRF check, whatever else it carries.
 
+This works only because the two classes read different credentials.
+
+### Header clients need a keyword of their own
+
+`HeaderJWTAuthentication` and Simple JWT's `JWTAuthentication` both read
+`Authorization: Bearer`. Listed together, neither passes the other's token
+on: each claims every `Bearer` header and refuses a token it cannot verify,
+Signet's for the missing `typ` claim and Simple JWT's with "Token has no
+type". No order of the two classes works.
+
+Give the Signet header realm, and the class your views use, a keyword Simple
+JWT does not know:
+
+```{literalinclude} ../examples/simplejwt_header_cutover.py
+:language: python
+:start-at: from django.urls
+```
+
+Signet's clients then send `Authorization: Signet <token>`. Simple JWT's
+class returns `None` for a header type it does not know, and Signet's class
+does the same for `Bearer`, so DRF moves on to the next class either way.
+List `SignetHeaderAuthentication` and `JWTAuthentication` in your views'
+authentication classes, in either order. The keyword stays after the
+cutover unless you change it again, and so do the clients.
+
 Point your login at Signet first, so every new session is a Signet session.
 Then decide how long existing Simple JWT sessions may last:
 
@@ -61,6 +88,17 @@ Then decide how long existing Simple JWT sessions may last:
 - Once you remove it, no new Simple JWT access token is issued. Remove
   `JWTAuthentication` one Simple JWT `ACCESS_TOKEN_LIFETIME` later, when the
   last one has expired. Its clients then log in again, through Signet.
+
+## Record `last_login`
+
+Simple JWT's login set `last_login` when `UPDATE_LAST_LOGIN` was on.
+Signet's never does. To keep it current, connect a `token_issued`
+receiver, which runs after every successful login:
+
+```{literalinclude} ../examples/last_login.py
+:language: python
+:pyobject: record_last_login
+```
 
 ## Drop the old token tables
 
@@ -96,6 +134,7 @@ frontend on another origin.
 
 To keep tokens in response bodies instead, for a mobile client or to change
 less client code at once, add a header realm; see {doc}`header-clients`.
+During the cutover, give it its own keyword, as above.
 Its login returns `access` and `refresh` in the body, as Simple JWT's does,
 with `"authenticated": true` beside them. Two things differ from Simple JWT:
 

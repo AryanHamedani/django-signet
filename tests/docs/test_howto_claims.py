@@ -12,7 +12,6 @@ from rest_framework.test import APIClient
 
 from django_signet.checks import check_refresh_cookie_path
 from django_signet.csrf import CSRF_HEADER
-from django_signet.exceptions import TokenInvalid
 from django_signet.sessions.rotation import RotationPolicy
 from django_signet.tokens.access import AccessToken
 from django_signet.tokens.refresh import RefreshToken
@@ -114,17 +113,13 @@ def test_reserved_claims_cannot_be_overwritten(user):
 
 
 @pytest.mark.django_db
-def test_an_aud_claim_without_audience_makes_every_token_fail(user):
-    pair = RotationPolicy().open_session(user, extra={"aud": "reports"})
-    assert pair.access.claims["aud"] == "reports"  # signed in...
-    with pytest.raises(TokenInvalid):
-        AccessToken().verify(pair.access.value)  # ...and then refused
-
-
-@pytest.mark.django_db
-def test_an_iss_claim_without_issuer_is_signed_as_given(user):
-    pair = RotationPolicy().open_session(user, extra={"iss": "someone-else"})
-    assert AccessToken().verify(pair.access.value)["iss"] == "someone-else"
+def test_aud_and_iss_from_get_claims_are_dropped_when_the_settings_are_unset(user):
+    """Before the fix an ``aud`` made every token fail verification and an
+    ``iss`` was signed as given, unchecked. Both are now dropped."""
+    pair = RotationPolicy().open_session(user, extra={"aud": "x", "iss": "y"})
+    claims = AccessToken().verify(pair.access.value)  # verifies
+    assert "aud" not in claims
+    assert "iss" not in claims
 
 
 @pytest.mark.django_db

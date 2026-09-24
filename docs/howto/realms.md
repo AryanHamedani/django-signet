@@ -107,9 +107,9 @@ The store row has consequences worth spelling out:
 - **A session opened at one realm can be refreshed at another.** The
   successor comes back through the refreshing realm's transport, with the
   claims its `get_claims()` returns. So a claim such as `{"realm": "staff"}`
-  does not record where a session began, and restricting who can log in at
-  a realm, with its own `serializer_class`, does not restrict who ends up
-  holding its tokens.
+  does not, on its own, record where a session began, and restricting who
+  can log in at a realm, with its own `serializer_class`, does not restrict
+  who ends up holding its tokens. The next section closes this.
 - **Revocation spans every realm.** Logout-all at any realm, and a password
   change, revoke every session of the user, whichever realm opened it. (A
   store that cannot revoke by user revokes none; see
@@ -117,6 +117,52 @@ The store row has consequences worth spelling out:
 
 What stops a user getting into a view is the permission class on that view,
 checked against the user as they are now.
+
+## Bind a session to its realm
+
+A permission class answers *who* the user is. It cannot tell *how* the
+session began. If the staff realm's login is stricter than the default one,
+with its own `serializer_class` requiring a second factor say, a session
+opened at the default login can still be refreshed at the staff realm and
+come back with staff cookies.
+
+To close that, have the realm stamp its tokens with a claim, and refuse any
+token without it, both at refresh and in the realm's views:
+
+```{literalinclude} ../examples/realm_binding_urls.py
+:language: python
+:start-at: from django.urls
+```
+
+- `get_claims` puts `{"realm": "staff"}` in both tokens, at login and at
+  every refresh at this realm.
+- `StaffRotationPolicy.get_user` sees the refresh token's claims before it
+  is consumed, and raises a `SignetError` for a token without the claim.
+  A default-realm refresh token presented at `staff:refresh` gets 401.
+- `StaffCookieAuthentication.validate_claims` does the same for access
+  tokens, so a default-realm access token copied into the staff cookie gets
+  401 at the staff views.
+
+The pattern has three limits:
+
+- **A refused refresh burns the session it presented.** Refusing in
+  `get_user` revokes that session with the reason `admin`, as for a
+  disabled account: the default-realm session whose refresh token was
+  carried to `staff:refresh` ends.
+- **`staff:verify` still accepts any realm's token.** The verify endpoint
+  authenticates with its own `authentication_classes`, bound to the realm's
+  transport, and never runs `StaffCookieAuthentication.validate_claims`.
+  Do not treat a 200 from it as proof of a staff session.
+- **Do not set `authentication_classes` on the realm.** A realm's
+  attributes reach all five endpoints, login and refresh included, which
+  would then authenticate with it. Put the check on the class your views
+  list, as here.
+
+The binding is one way. The default realm checks nothing, so a staff token
+copied into the default cookie authenticates at the default realm's views.
+
+Use a permission class when the question is who the user is, and this claim
+pattern when the question is how the session began. The example uses both.
 
 ## See also
 
