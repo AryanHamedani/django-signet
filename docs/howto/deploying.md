@@ -115,5 +115,5 @@ Nothing removes expired sessions from the default ORM store on its own. Run
 The public API is not frozen until 1.0. Until then a minor release may
 rename a hook or change its signature. Pin the version you deploy, and read
 the
-[changelog](https://github.com/AryanHamedani/django-signet/blob/main/CHANGELOG.md)
+[changelog](../changelog.md)
 before you upgrade.

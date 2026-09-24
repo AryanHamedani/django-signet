@@ -138,7 +138,8 @@ During the cutover, give it its own keyword, as above.
 Its login returns `access` and `refresh` in the body, as Simple JWT's does,
 with `"authenticated": true` beside them. Two things differ from Simple JWT:
 
-- **Refresh takes the refresh token in `Authorization: Bearer`**, not in a
-  JSON body as `{"refresh": ...}`, and always answers with both tokens.
+- **Refresh takes the refresh token in the `Authorization` header**, with
+  the realm's keyword (`Signet` during the cutover), not in a JSON body as
+  `{"refresh": ...}`, and always answers with both tokens.
 - **Logout takes it the same way**, where Simple JWT's `TokenBlacklistView`
   takes it in the body.
