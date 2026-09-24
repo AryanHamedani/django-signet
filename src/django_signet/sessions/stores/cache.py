@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from django.core.cache import caches
 from django.utils import timezone
 
+from django_signet.conf import setting
 from django_signet.sessions.stores.base import (
     ConsumeResult,
     FamilyLike,
@@ -71,9 +72,11 @@ class CacheTokenStore(TokenStore):
     opposite default - see ``TokenStore``.
 
     Atomicity comes entirely from ``cache.add()``, which sets a key only
-    when it is absent. That compare-and-set is the one atomic primitive
-    every Django cache backend implements; there are no transactions and
-    no conditional updates here. ``consume()`` decides LIVE versus
+    when it is absent; there are no transactions and no conditional
+    updates here. Redis, Memcached, ``DatabaseCache`` and (within one
+    process) ``LocMemCache`` implement ``add()`` atomically.
+    ``FileBasedCache`` does not - it checks, then writes - so it must
+    never back this store. ``consume()`` decides LIVE versus
     ALREADY_CONSUMED solely from whether its own ``add()`` call won -
     never from a prior read - because a read-then-write decision leaves
     a gap two concurrent callers can both land in and both "win".
@@ -83,10 +86,14 @@ class CacheTokenStore(TokenStore):
     The best available approximation, and the one used below, is to
     re-check the revocation key immediately after winning the claim.
     That narrows the window in which a mid-flight revocation is missed;
-    it does not close it. See docs/stores.md.
+    it does not close it. See docs/howto/choosing-a-store.md.
     """
 
     supports_revoke_all_for_user: ClassVar[bool] = False
+
+    access_lifetime = setting("ACCESS_TOKEN_LIFETIME")
+    refresh_lifetime = setting("REFRESH_TOKEN_LIFETIME")
+    leeway = setting("LEEWAY")
 
     def __init__(self, alias: str = "default", deny_by_default: bool = False) -> None:
         self.alias = alias
@@ -106,6 +113,27 @@ class CacheTokenStore(TokenStore):
         # delay between issue() and the read that follows it, reporting
         # the misleading NOT_FOUND instead once the cache evicted it first.
         return max(60, int((expires_at - timezone.now()).total_seconds()))
+
+    def _revocation_ttl(self, family: _CachedFamily | None) -> int:
+        """How long a revocation marker must outlive the revocation.
+
+        Once a family's cache entry is gone - ``revoke_family`` deletes
+        it - ``consume()`` refuses every token of that family, and the
+        allowlist ``is_live()`` answers no. The marker is what the
+        *denylist* ``is_live()`` (and the ``Strict*`` check behind it)
+        still relies on, for access tokens minted while the family was
+        live. None can be minted after the family expires, and none
+        verifies later than its own lifetime plus ``LEEWAY``; the refresh
+        lifetime is added on top as a margin for an access-token class
+        with a longer lifetime than the setting. For a family the cache no
+        longer holds, no token of it can be minted from now on.
+        """
+        now = timezone.now()
+        remaining = timedelta(0)
+        if family is not None and family.expires_at > now:
+            remaining = family.expires_at - now
+        bound = remaining + self.refresh_lifetime + self.access_lifetime + self.leeway
+        return max(60, int(bound.total_seconds()))
 
     def _is_revoked(self, family_id: uuid.UUID) -> bool:
         return self.cache.get(_REVOKED.format(family_id)) is not None
@@ -166,7 +194,8 @@ class CacheTokenStore(TokenStore):
         # Narrows, but cannot close, the revocation-versus-claim window:
         # a revocation landing between the pre-check above and this
         # add() winning is caught here. One landing after this line has
-        # already run is not - see the class docstring and docs/stores.md.
+        # already run is not - see the class docstring and
+        # docs/howto/choosing-a-store.md.
         if self._is_revoked(token.family_id):
             return ConsumeResult(Outcome.FAMILY_REVOKED, family, token)
         return ConsumeResult(Outcome.LIVE, family, token)
@@ -182,10 +211,12 @@ class CacheTokenStore(TokenStore):
     def revoke_family(self, family_id: uuid.UUID, reason: str) -> None:
         # add(), not set(): first-reason-wins, matching TokenFamily.revoke()'s
         # idempotency guard - a later routine LOGOUT must not silently
-        # overwrite an earlier REUSE_DETECTED security event. Cached
-        # forever (timeout=None), not for the family's remaining TTL: a
-        # denylist that let its own revocation entry expire would
-        # silently revive the family it was recording as dead.
+        # overwrite an earlier REUSE_DETECTED security event. Cached for
+        # _revocation_ttl(), not the family's remaining TTL: a denylist
+        # whose revocation entry expired while an access token of the
+        # family could still verify would revive the family it records as
+        # dead. Not forever either - under a noeviction policy, markers
+        # that never expire grow without bound until writes are refused.
         #
         # family_revoked fires on exactly the path TokenFamily.revoke()
         # fires it: the first, winning revocation of a family this store
@@ -194,7 +225,9 @@ class CacheTokenStore(TokenStore):
         # there is no user or family to hand a receiver, and the ORM
         # adapter is silent for an unknown family too.
         family = self.cache.get(_FAMILY.format(family_id))
-        won = self.cache.add(_REVOKED.format(family_id), reason, None)
+        won = self.cache.add(
+            _REVOKED.format(family_id), reason, self._revocation_ttl(family)
+        )
         self.cache.delete(_FAMILY.format(family_id))
         if won and family is not None:
             family.revoked_at = timezone.now()
@@ -218,9 +251,7 @@ class CacheTokenStore(TokenStore):
         )
 
     def purge_expired(self) -> int:
-        # Nothing to do. Family and token entries carry their own TTL, so
-        # expired ones are already gone from the cache by the time anything
-        # could purge them. Revocation markers are the exception - written
-        # with no timeout (see revoke_family) - and must not be purged:
-        # a denylist that dropped one would revive the family it records.
+        # Nothing to do: every key this store writes carries its own TTL -
+        # revocation markers included (see _revocation_ttl) - so expired
+        # entries are already gone by the time anything could purge them.
         return 0
