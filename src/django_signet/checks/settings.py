@@ -6,6 +6,8 @@ from __future__ import annotations
 from typing import Any
 
 from django.core.cache import InvalidCacheBackendError, caches
+from django.core.cache.backends.db import DatabaseCache
+from django.core.cache.backends.filebased import FileBasedCache
 from django.core.checks import CheckMessage, Error
 from django.core.checks import Warning as CheckWarning
 from django.core.exceptions import ImproperlyConfigured
@@ -86,11 +88,21 @@ def check_setting_types(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
 
 
 def check_grace_cache(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
+    """The grace cache must exist (``signet.W003``), and should not be a
+    backend that keeps expired entries (``signet.W013``).
+
+    A grace entry holds the raw successor pair, and its refresh token
+    stays valid until the session next refreshes. The entry's timeout is
+    the window, but ``DatabaseCache`` and ``FileBasedCache`` delete an
+    expired entry only when it is read or culled - so a copy of that table
+    or directory can hold live refresh tokens long after the window, the
+    one place a raw token would otherwise not outlive it.
+    """
     alias = _signet().get("GRACE_CACHE", "default")
     if alias is None:
         return []  # explicitly disabled: strict mode, nothing to warn about
     try:
-        caches[alias]
+        backend = caches[alias]
     except (InvalidCacheBackendError, TypeError):
         # TypeError covers an unhashable alias (a list, say) - it can never
         # name a real cache either, so it degrades the same way as an
@@ -104,6 +116,20 @@ def check_grace_cache(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
                 "token theft. Configure the cache, or set GRACE_CACHE=None to "
                 "choose strict RFC 9700 behaviour deliberately.",
                 id="signet.W003",
+            )
+        ]
+    if isinstance(backend, DatabaseCache | FileBasedCache):
+        return [
+            CheckWarning(
+                f"SIGNET['GRACE_CACHE'] names cache alias {alias!r}, a "
+                f"{type(backend).__name__}, which keeps expired entries until "
+                "they are read or culled.",
+                hint="A grace entry holds a raw refresh token that stays valid "
+                "until the session next refreshes, so a copy of this cache "
+                "can hold live refresh tokens long after the grace window. "
+                "Use a cache that expires entries itself (Redis, Memcached), "
+                "or set GRACE_CACHE=None.",
+                id="signet.W013",
             )
         ]
     return []
@@ -175,7 +201,8 @@ def check_token_store(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
     documented configuration. But under it a password change revokes
     nothing (the receiver logs a warning and lets the save through) and
     logout-all answers 501 - and a deployment should learn that from
-    ``manage.py check``, not from an incident.
+    ``manage.py check``, not from an incident. ``signet.W014`` warns about
+    a store backed by ``FileBasedCache``, whose ``add()`` is not atomic.
 
     *Any* exception from building the store is reported as signet.E010,
     not only the ``ImproperlyConfigured`` that :func:`get_store` raises for
@@ -198,9 +225,25 @@ def check_token_store(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
                 f"constructed: {type(exc).__name__}: {exc}"
             )
         ]
+    messages: list[CheckMessage] = []
+    # Duck-typed: a check may not import a concrete store (see the import
+    # contracts), and any store exposing its cache gets the same scrutiny.
+    if isinstance(getattr(store, "cache", None), FileBasedCache):
+        messages.append(
+            CheckWarning(
+                f"The configured token store ({type(store).__name__}) is "
+                "backed by a FileBasedCache, whose add() is not atomic.",
+                hint="add() checks, then writes, so two concurrent refreshes "
+                "of one token can both be answered as the first, and reuse "
+                "detection misses the replay. Use Redis, Memcached or "
+                "DatabaseCache for the store.",
+                id="signet.W014",
+            )
+        )
     if store.supports_revoke_all_for_user:
-        return []
+        return messages
     return [
+        *messages,
         CheckWarning(
             f"The configured token store ({type(store).__name__}) cannot "
             "revoke every session for a user: password-change revocation "
@@ -209,5 +252,5 @@ def check_token_store(app_configs: Any, **kwargs: Any) -> list[CheckMessage]:
             "sessions live until they expire, and POST logout-all returns "
             "501. Use ORMTokenStore if either matters; see docs/stores.md.",
             id="signet.W007",
-        )
+        ),
     ]
