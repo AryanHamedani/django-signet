@@ -58,18 +58,20 @@ report:
 `CacheTokenStore` has nothing for the command to delete. It prints
 `Purged 0 expired session families.` every time, whatever the cache holds.
 
-Most of what the store writes expires on its own. Session entries, refresh
-token entries and the markers that record a spent token all carry a
-timeout, and the cache discards them when it passes. **Revocation markers
-do not.** They are written with no timeout, so that a revoked session cannot
-come back to life when its marker expires, and neither the command nor a
-timeout removes them. They stay until the cache evicts them.
+Everything the store writes carries a timeout, and the cache discards it
+when the timeout passes:
 
-That has two consequences, both covered in {doc}`choosing-a-store`:
+- session entries, at the session's expiry;
+- refresh-token entries and the markers that record a spent token, at the
+  token's expiry;
+- revocation markers, once the session's remaining lifetime,
+  `REFRESH_TOKEN_LIFETIME`, `ACCESS_TOKEN_LIFETIME` and `LEEWAY` have all
+  passed. By then no token of the session can verify, so the marker is no
+  longer needed.
 
-- revocation markers accumulate for as long as the cache keeps them;
-- in denylist mode, a marker the cache evicts revives its session for the
-  `Strict*` authentication classes.
+Each of those timeouts is at least 60 seconds. A cache that evicts can drop
+entries sooner, which is a different problem; see
+[Survive eviction](choosing-a-store.md#survive-eviction).
 
 Scheduling `signet_purge` under the cache store is harmless, and does
 nothing.

@@ -14,6 +14,8 @@ from django_signet.hashing import token_digest
 from django_signet.models import IssuedToken, RevocationReason, TokenFamily
 from django_signet.sessions.rotation import RotationPolicy
 
+REFRESH = timedelta(days=14)  # REFRESH_TOKEN_LIFETIME's default
+ACCESS = timedelta(minutes=5)  # ACCESS_TOKEN_LIFETIME's default
 CACHE_STORE = {"STORE": "django_signet.sessions.stores.cache.CacheTokenStore"}
 
 
@@ -79,10 +81,13 @@ def test_under_the_cache_store_the_command_deletes_nothing(user, caplog):
     assert [r.getMessage() for r in caplog.records] == [
         "Purged 0 expired session families."
     ]
-    # Token entries carry a TTL; the revocation marker has none and stays.
+    # Every entry carries a timeout. The revocation marker's outlasts the
+    # session by the refresh and access lifetimes (and LEEWAY, 0 here).
     token_key = f"signet:tok:{token_digest(session.refresh.value)}"
     revoked_key = f"signet:rev:{session.family.id}"
     assert cache.get(token_key) is not None
     assert cache.get(revoked_key) == RevocationReason.LOGOUT
     assert cache._expire_info[cache.make_and_validate_key(token_key)] is not None
-    assert cache._expire_info[cache.make_and_validate_key(revoked_key)] is None
+    marker_expires = cache._expire_info[cache.make_and_validate_key(revoked_key)]
+    bound = session.family.expires_at + REFRESH + ACCESS
+    assert abs(marker_expires - bound.timestamp()) < 5

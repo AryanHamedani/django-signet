@@ -139,13 +139,12 @@ def test_a_missing_verifying_key_is_error_e004(auth_server):
 
 
 @pytest.mark.django_db
-def test_a_refresh_sent_to_a_resource_server_spends_the_token(
+def test_a_refresh_sent_to_a_resource_server_leaves_the_token_unspent(
     auth_server, resource_server, user
 ):
-    """Pins why the page says not to mount the auth endpoints on a resource
-    server: refresh consumes the token before signing its successor fails,
-    so the client's retry at the issuing server is taken for reuse."""
-    from django_signet.models import RevocationReason, TokenFamily
+    """Signing fails before the token is consumed, so the refresh answers
+    500 and the client's retry at the issuing server succeeds."""
+    from django_signet.models import TokenFamily
 
     with override_settings(ROOT_URLCONF="examples.header_urls", **auth_server):
         pair = _mobile_login()
@@ -154,7 +153,7 @@ def test_a_refresh_sent_to_a_resource_server_spends_the_token(
         client = APIClient(raise_request_exception=False)
         assert client.post(reverse("mobile:refresh"), headers=bearer).status_code == 500
     with override_settings(ROOT_URLCONF="examples.header_urls", **auth_server):
-        # Within the grace window, too: the failed refresh cached no pair.
         retry = APIClient().post(reverse("mobile:refresh"), headers=bearer)
-    assert retry.status_code == 401
-    assert TokenFamily.objects.get().revoked_reason == RevocationReason.REUSE_DETECTED
+    assert retry.status_code == 200
+    assert retry.json()["refresh"] != pair["refresh"]
+    assert TokenFamily.objects.get().revoked_reason is None

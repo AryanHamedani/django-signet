@@ -72,14 +72,16 @@ returns is dropped, whatever its value:
 | `exp` | its expiry |
 | `sid` | the session (token family) id, in both tokens |
 
-Two more are reserved only when their setting is set:
+Two more are always dropped from what `get_claims` returns, whether or not
+their setting is set, because verification checks them against the
+settings:
 
-| Claim | Reserved when | Otherwise |
-|---|---|---|
-| `aud` | [`AUDIENCE`](../reference/settings.md#audience) is set | a `get_claims` value is signed in, and then **every token fails verification**: the verifier expects no audience, so it refuses a token that has one. Login still answers 200, and every request that presents one of its tokens is refused. |
-| `iss` | [`ISSUER`](../reference/settings.md#issuer) is set | a `get_claims` value is signed in as given, and nothing checks it. |
+| Claim | Holds |
+|---|---|
+| `aud` | [`AUDIENCE`](../reference/settings.md#audience), when it is set; otherwise the claim is absent |
+| `iss` | [`ISSUER`](../reference/settings.md#issuer), when it is set; otherwise the claim is absent |
 
-Return neither from `get_claims`. Set `AUDIENCE` and `ISSUER` instead.
+To put an audience or an issuer in the tokens, set `AUDIENCE` or `ISSUER`.
 
 ## Derive claims from server-side state
 

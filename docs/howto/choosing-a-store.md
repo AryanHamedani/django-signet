@@ -17,10 +17,10 @@ allowlist by default and a denylist with `deny_by_default=True`.
 |---|---|---|
 | Durability | survives restarts | lost when the cache is flushed, and entry by entry when it evicts |
 | Claiming a refresh token | one conditional `UPDATE ... WHERE consumed_at IS NULL`, which also rechecks that the session is unrevoked | `cache.add()`, then a second read of the revocation marker |
-| Work per refresh | five queries: load the user, read the token and its session, claim it, record the session's last use, insert the successor | one query, to load the user, and six cache calls |
+| Work per refresh | five queries: load the user, then, in one transaction, read the token and its session, claim it, record the session's last use and insert the successor | one query, to load the user, and six cache calls |
 | Logout-all and password-change revocation | supported | **not supported**: warning `signet.W007` |
 | Mode | allowlist | allowlist (default) or denylist (`deny_by_default=True`) |
-| Expired rows | deleted by `signet_purge` | expire on their own, except revocation markers |
+| Expired rows | deleted by `signet_purge` | expire on their own |
 
 Unless the grace window is turned off, both stores' refreshes also write the
 new pair to [`GRACE_CACHE`](../reference/settings.md#grace_cache).
@@ -38,12 +38,12 @@ disagree about where a session lives:
 
 [`STORE`](../reference/settings.md#store) is a dotted path, or a
 `TokenStore` subclass, and defaults to
-`"django_signet.sessions.stores.orm.ORMTokenStore"`.
+`"django_signet.sessions.stores.orm.ORMTokenStore"`. The default is a path
+because `settings.py` cannot import a module that imports models.
 [`STORE_OPTIONS`](../reference/settings.md#store_options) is passed to its
 constructor as keyword arguments; for `CacheTokenStore` they are `alias`,
-the cache to use (`"default"`), and `deny_by_default` (`False`). A path
-rather than a class, because `settings.py` cannot import a module that
-imports models. `manage.py check` reports
+the cache to use (`"default"`), and `deny_by_default` (`False`).
+`manage.py check` reports
 [`signet.E010`](../reference/checks.md#signete010---the-configured-store-could-not-be-built)
 if the store cannot be built.
 
@@ -54,6 +54,14 @@ password-change revocation, `signet_purge` and the system checks build the
 store from the setting and cannot be overridden that way. Sessions then
 live in two stores that disagree: a password change revokes nothing in the
 one you assigned, and the checks inspect the other.
+
+The example keeps the default allowlist mode. The two modes differ for a
+session the cache no longer holds, because its entry expired, was evicted
+or was lost in a flush. An allowlist refuses its access tokens at the
+`Strict*` classes; a denylist accepts them until they expire, unless it
+holds a revocation marker for the session. Refresh fails in both modes.
+Choose the denylist only if a cache flush must not end every `Strict*`
+session at once, and accept that it trusts what it has forgotten.
 
 To write a store of your own, subclass `TokenStore`; see
 {doc}`../reference/sessions`. The port is public API, but the API is not
@@ -83,11 +91,16 @@ ids per user outside the library.
 ### Fold revocation into the claim
 
 `cache.add()` sets a key only if it is absent, and reports whether it did.
-It is the only compare-and-set every Django cache backend implements. There
-are no transactions and no conditional updates. `CacheTokenStore.consume()`
-decides "live" or "already consumed" from whether its own `add()` won, never
-from an earlier read, so two requests racing to consume the same token
-cannot both win.
+It is the store's only atomic step; there are no transactions and no
+conditional updates. `CacheTokenStore.consume()` decides "live" or "already
+consumed" from whether its own `add()` won, never from an earlier read, so
+two requests racing to consume the same token cannot both win, provided the
+backend's `add()` is atomic.
+
+Redis, Memcached, `DatabaseCache` and, within one process, `LocMemCache`
+implement `add()` atomically. `FileBasedCache` does not: it checks for the
+key, then writes it, so two requests can both win. Never use it for the
+store.
 
 What `add()` cannot do is also check the session's revocation in the same
 step. `ORMTokenStore` rechecks `revoked_at IS NULL` inside the `UPDATE` that
@@ -99,9 +112,15 @@ lands after the reread is missed. If that gap matters to you, use
 
 ### Survive eviction
 
-A cache with an eviction policy removes keys under memory pressure, before
-their timeout. Redis under `allkeys-lru` or `volatile-lru`, Memcached, and
-`LocMemCache` at `MAX_ENTRIES` all do. Two of the store's keys matter:
+A cache with an eviction policy removes keys before their timeout. Redis
+under `allkeys-lru` or `volatile-lru` does so under memory pressure, and so
+does Memcached, by design, unless it runs with `-M`. `LocMemCache`,
+`FileBasedCache` and `DatabaseCache` cull when they reach `MAX_ENTRIES`,
+300 by default: each login writes two keys and each refresh three more
+(counting the grace entry, when `GRACE_CACHE` is the same cache), so with
+default options they start culling after roughly a hundred logins and
+refreshes. Two of
+the store's keys matter:
 
 - **The marker that records a spent refresh token.** Reuse detection
   depends on it. If it is evicted, the spent token redeems again as if it
@@ -117,16 +136,31 @@ their timeout. Redis under `allkeys-lru` or `volatile-lru`, Memcached, and
   as revoked.
 
 If you use `CacheTokenStore`, give it a cache that never evicts, such as
-Redis with `maxmemory-policy noeviction`, and size it for the load. When it
-fills, such a cache refuses writes instead, and logins and refreshes fail
-until it has room. If you cannot, use `ORMTokenStore`.
+Redis with `maxmemory-policy noeviction`, and size it for the load. Every
+key the store writes has a timeout, so what it holds is bounded by your
+login and refresh rate over those timeouts; see the revocation markers
+below. When such a cache fills, it refuses writes instead, and logins,
+refreshes and logouts fail until it has room. If you cannot give it a cache
+like that, use `ORMTokenStore`.
+
+### Survive a restart or a failover
+
+A write the cache acknowledged can still be lost. Redis restarted from an
+RDB snapshot comes back without the writes made since the snapshot, and a
+failover to an asynchronous replica drops the writes the replica had not
+received. If a spent-token marker is lost while the token's own entry
+survives, from an earlier write, the spent token redeems again: the same
+failure as eviction. Use AOF persistence (`appendfsync always` loses
+nothing), and treat a failover as a gap in reuse detection.
 
 ## Other cache-store caveats
 
-- **Revocation markers are kept forever.** They are written with no
-  timeout, so that a denylist cannot forget a revocation when a timeout
-  passes. They accumulate for as long as the cache keeps them, and
-  `signet_purge` does not remove them; see {doc}`purging`.
+- **Revocation markers outlive the session.** A marker lasts for the
+  session's remaining lifetime plus `REFRESH_TOKEN_LIFETIME`,
+  `ACCESS_TOKEN_LIFETIME` and `LEEWAY`, and at least 60 seconds. By then no
+  token of the session can verify, so a denylist cannot forget a revocation
+  it still needs. `signet_purge` has nothing to do with them; see
+  {doc}`purging`.
 - **A vanished session reads as revoked.** Whether its entry was revoked,
   reached its timeout, or was evicted, `consume()` reports it revoked
   rather than live: refusing a refresh that should have worked can be

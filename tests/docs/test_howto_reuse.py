@@ -8,6 +8,8 @@ from datetime import timedelta
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.cache.backends import base as cache_base
+from django.core.cache.backends import locmem
 from django.db import connection
 from django.test import override_settings
 from django.urls import reverse
@@ -24,7 +26,8 @@ from tests.docs.helpers import wire_header
 
 CREDENTIALS = {"username": "alice", "password": "pw-not-used-in-assertions"}
 POLICY = CookiePolicy()
-STRICT = {"GRACE_CACHE": None}  # no grace window: every replay is reuse
+STRICT = {"GRACE_CACHE": None}
+_real_time = time.time  # no grace window: every replay is reuse
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +35,30 @@ def _clear_cache():
     cache.clear()
     yield
     cache.clear()
+
+
+class _Clock:
+    """``time.time()`` for the cache backends, moved forward on demand, so
+    a grace entry expires without the test sleeping through the window."""
+
+    def __init__(self):
+        self.offset = 0.0
+
+    def time(self):
+        return _real_time() + self.offset
+
+    def advance(self, seconds):
+        self.offset += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    fake = _Clock()
+    # LocMemCache reads the time in both modules: base.py when it computes
+    # an expiry, locmem.py when it checks one.
+    monkeypatch.setattr(cache_base, "time", fake)
+    monkeypatch.setattr(locmem, "time", fake)
+    return fake
 
 
 @pytest.fixture
@@ -72,15 +99,15 @@ def _spent_token():
 
 @pytest.mark.django_db
 @pytest.mark.usefixtures("alerting_realm")
-def test_the_hook_alerts_on_a_replay_outside_the_grace_window(user, alerts):
-    with override_settings(SIGNET={"GRACE_WINDOW": timedelta(seconds=1)}):
+def test_the_hook_alerts_on_a_replay_outside_the_grace_window(user, alerts, clock):
+    with override_settings(SIGNET={"GRACE_WINDOW": timedelta(seconds=5)}):
         spent, csrf = _spent_token()
 
         # Inside the window a replay is a retry: the same pair, no alert.
         assert _post("refresh", spent, csrf).status_code == 200
         assert alerts() == []
 
-        time.sleep(1.1)  # the grace entry expires with the window
+        clock.advance(6)  # the grace entry expires with the window
         assert _post("refresh", spent, csrf).status_code == 401
 
     family = TokenFamily.objects.get()
@@ -138,17 +165,17 @@ class _WritingPolicy(AlertingRotationPolicy):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_a_failing_database_write_in_the_hook_rolls_back_the_burn(monkeypatch, user):
-    """Pins a limitation the page states: under ``ATOMIC_REQUESTS`` a hook
-    whose database write fails marks the request's transaction for
-    rollback, and the burn goes with it, although the exception is caught.
-    A ``token_reuse_detected`` receiver runs under a savepoint instead."""
+def test_a_failing_database_write_in_the_hook_does_not_undo_the_burn(monkeypatch, user):
+    """Under ``ATOMIC_REQUESTS`` the hook runs under a savepoint, so its
+    failed write rolls back only the hook's own work. (Before the fix it
+    marked the request's transaction for rollback and took the burn with
+    it.)"""
     monkeypatch.setattr(reuse_detection.AppRealm, "rotation", _WritingPolicy())
     monkeypatch.setitem(connection.settings_dict, "ATOMIC_REQUESTS", True)
     with override_settings(ROOT_URLCONF="examples.reuse_detection", SIGNET=STRICT):
         spent, csrf = _spent_token()
-        assert _post("refresh", spent, csrf).status_code == 401  # still refused
-    assert TokenFamily.objects.get().revoked_reason is None  # but not burned
+        assert _post("refresh", spent, csrf).status_code == 401
+    assert TokenFamily.objects.get().revoked_reason == RevocationReason.REUSE_DETECTED
 
 
 @pytest.mark.django_db

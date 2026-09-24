@@ -25,6 +25,14 @@ so reuse is detected at all three. When a consumed token arrives:
   logout-all answer 401. Logout answers 200 to a cookie client, which it
   signs out whatever the state of its token, and 401 to a header client.
 
+Two replays are refused without being reported:
+
+- **A spent token of a session already revoked or expired** is refused as
+  such. The store checks the session before the token, so no reuse is
+  detected and nothing fires.
+- **Logout-all under `CacheTokenStore`** answers 501 before it consumes
+  anything, so it detects nothing.
+
 Access tokens already issued in the burned session keep working until they
 expire, unless your views use a `Strict*` authentication class; see
 {doc}`../reference/authentication`.
@@ -52,7 +60,8 @@ The hook runs after the family is revoked and after the signal below is
 sent. Then the request is refused. The `family` it receives is the record
 read before the revocation, so its `revoked_at` is still `None`; ask the
 store if you need to know. It carries the `user`, and the `ip_address` and
-`user_agent` recorded at login.
+`user_agent` recorded when the session was opened, at login. Neither the
+hook nor the signal sees the replaying request.
 
 The example logs at `CRITICAL` on a `security` logger, which your logging
 configuration can route to whatever pages your on-call.
@@ -62,18 +71,12 @@ configuration can route to whatever pages your on-call.
 If the hook raises, say a paging API times out, the exception is logged at
 `error` on the `django_signet.sessions.rotation` logger, with its traceback,
 and ignored. The family stays revoked and the replay is refused as usual.
-That holds under `ATOMIC_REQUESTS` too.
 
-```{warning}
-One failure does undo it. Under `ATOMIC_REQUESTS`, a hook whose **database
-write** fails marks the request's transaction for rollback. The exception
-is still caught and the replay still refused, but the revocation is rolled
-back with the transaction, and the session stays live.
-
-Keep database writes out of the hook. Do them in a `token_reuse_detected`
-receiver: inside a transaction, receivers run under a savepoint of their
-own, so a failed write there rolls back only the receivers' work.
-```
+That holds under `ATOMIC_REQUESTS` too, including for a database query in
+the hook that fails. Inside a transaction the hook runs under a savepoint
+of its own, as signal receivers do, so a failed query rolls back only the
+hook's work, never the revocation. (Under the ORM store even the example's
+`family.user` is a query.)
 
 ## Or alert from the signal
 
@@ -98,8 +101,7 @@ views.
 ### Which to use
 
 - **Use the signal** to alert on every realm, the stock endpoints included,
-  without changing your URLconf; to write to the database; or to have
-  several independent receivers.
+  without changing your URLconf, or to have several independent receivers.
 - **Use the hook** when the alert belongs to one realm's policy, a staff
   realm that pages someone, say, and you already have a realm to put it on.
 
@@ -133,5 +135,8 @@ any theft:
   look like reuse. An alias missing from `CACHES` is warning
   [`signet.W003`](../reference/checks.md#signetw003---grace-cache-not-configured).
 
-Record the IP address and user agent, as the example does, so whoever
-receives the alert can tell a user's second tab from someone else.
+The family records where the session was opened, not where the replay came
+from: neither the hook nor the signal sees the replaying request (`request`
+is `None`). To judge an alert, compare the login IP address and user agent
+in it with your access logs for the refresh, logout or logout-all request
+at that moment.
